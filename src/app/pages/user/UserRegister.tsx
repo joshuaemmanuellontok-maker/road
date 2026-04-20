@@ -1,0 +1,208 @@
+import { useState, type ChangeEvent, type FormEvent } from "react";
+import { Link, useNavigate } from "react-router";
+import { Car, ArrowLeft } from "lucide-react";
+import bgImage from "figma:asset/d571ab94c972a42774418c81ee3ff78236af1305.png";
+import { registerUser } from "../../api";
+import { setStoredUserSession } from "../../session";
+
+export function UserRegister() {
+  const navigate = useNavigate();
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [formData, setFormData] = useState({
+    username: "",
+    password: "",
+    confirmPassword: "",
+    mobileNumber: "",
+    fullName: "",
+  });
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+
+    if (formData.password !== formData.confirmPassword) {
+      setErrorMessage("Passwords do not match.");
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorMessage("");
+
+    try {
+      const result = await registerUser({
+        username: formData.username,
+        password: formData.password,
+        mobileNumber: formData.mobileNumber,
+        fullName: formData.fullName,
+      });
+
+      setStoredUserSession({
+        id: result.id,
+        fullName: formData.fullName,
+        email: result.email,
+        role: "motorist",
+        username: formData.username,
+        mobileNumber: formData.mobileNumber,
+      });
+
+      navigate("/user/dashboard");
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Registration failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    setFormData({
+      ...formData,
+      [e.target.name]: e.target.value,
+    });
+  };
+
+  return (
+    <div className="min-h-screen bg-[#1f2937] flex flex-col relative">
+      {/* Background Image with Blur */}
+      <div 
+        className="absolute inset-0 bg-cover bg-center"
+        style={{ backgroundImage: `url(${bgImage})` }}
+      />
+      <div className="absolute inset-0 backdrop-blur-md bg-[#1f2937]/85" />
+
+      {/* Content */}
+      <div className="relative z-10 flex flex-col min-h-screen">
+        <header className="px-6 py-4 border-b border-white/10 backdrop-blur-sm bg-black/20">
+          <div className="flex items-center justify-between max-w-4xl mx-auto">
+            <Link to="/user/login" className="flex items-center gap-2 text-gray-300 hover:text-white transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+              <span>Back</span>
+            </Link>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-[#ff6b3d] rounded-lg flex items-center justify-center">
+                <Car className="w-5 h-5 text-white" />
+              </div>
+              <span className="text-xl font-bold text-white">RoadResQ</span>
+            </div>
+          </div>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center px-6 py-12">
+          <div className="bg-gray-900/70 backdrop-blur-sm border border-white/10 rounded-3xl p-8 md:p-12 w-full max-w-md shadow-2xl">
+            <h1 className="text-3xl font-bold text-white mb-2">Create Account</h1>
+            <p className="text-gray-300 mb-8">Log up to access roadside assistance</p>
+
+            <form onSubmit={handleSubmit} className="space-y-5">
+              {errorMessage ? (
+                <div className="rounded-xl border border-red-500/50 bg-red-900/20 px-4 py-3 text-sm text-red-200">
+                  {errorMessage}
+                </div>
+              ) : null}
+              <div>
+                <label htmlFor="fullName" className="block text-sm font-medium text-gray-300 mb-2">
+                  Full Name
+                </label>
+                <input
+                  id="fullName"
+                  name="fullName"
+                  type="text"
+                  value={formData.fullName}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
+                  placeholder="Juan Dela Cruz"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="mobileNumber" className="block text-sm font-medium text-gray-300 mb-2">
+                  Mobile Number
+                </label>
+                <input
+                  id="mobileNumber"
+                  name="mobileNumber"
+                  type="tel"
+                  value={formData.mobileNumber}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
+                  placeholder="+63 917 123 4567"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
+                  Username
+                </label>
+                <input
+                  id="username"
+                  name="username"
+                  type="text"
+                  value={formData.username}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
+                  placeholder="Choose a username"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  name="password"
+                  type="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
+                  placeholder="Create a strong password"
+                  required
+                />
+              </div>
+
+              <div>
+                <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-300 mb-2">
+                  Confirm Password
+                </label>
+                <input
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  type="password"
+                  value={formData.confirmPassword}
+                  onChange={handleChange}
+                  className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
+                  placeholder="Re-enter password"
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="w-full bg-[#ff6b3d] hover:bg-[#ff5722] text-white py-4 rounded-xl font-semibold transition-colors shadow-lg"
+              >
+                {submitting ? "Creating Account..." : "Create Account"}
+              </button>
+            </form>
+
+            <div className="mt-6 text-center">
+              <p className="text-gray-300">
+                Already have an account?{" "}
+                <Link to="/user/login" className="text-[#ff6b3d] font-semibold hover:underline">
+                  Log In
+                </Link>
+              </p>
+            </div>
+
+            <div className="mt-8 pt-6 border-t border-white/10">
+              <p className="text-sm text-gray-400 text-center">
+                By logging up, you agree to our Terms of Service and Privacy Policy
+              </p>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

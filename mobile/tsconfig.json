@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "rootDir": "..",
+    "types": ["react", "react-native"],
+    "declaration": true,
+    "emitDeclarationOnly": false
+  },
+  "include": [
+    "App.tsx",
+    "src",
+    "../packages/shared/src",
+    "../utils/supabase/info.tsx"
+  ],
+  "exclude": ["node_modules"]
+}

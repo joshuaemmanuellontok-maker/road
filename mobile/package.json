@@ -1,0 +1,31 @@
+{
+  "name": "roadresq-mobile",
+  "version": "0.0.1",
+  "private": true,
+  "main": "expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start --offline --port 8083",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web --offline --port 8083"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~6.1.2",
+    "@supabase/supabase-js": "^2.103.0",
+    "expo": "54.0.0",
+    "expo-document-picker": "~14.0.8",
+    "expo-image-picker": "~17.0.10",
+    "expo-location": "~19.0.8",
+    "expo-notifications": "~0.31.5",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-maps": "1.20.1",
+    "react-native-web": "^0.21.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "babel-preset-expo": "^55.0.17",
+    "expo-module-scripts": "^55.0.2",
+    "typescript": "~5.9.2"
+  }
+}

@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# build outputs
+dist/
+build/
+**/build/
+
+# local env files
+.env
+.env.*
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# system files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# expo
+.expo/
+web-build/
+
+# other
+package-lock.json

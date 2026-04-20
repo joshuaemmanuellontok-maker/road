@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "RoadResQ Mobile",
+    "slug": "roadresq-mobile",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "RoadResQ uses your location to find nearby shops and track rescue responders."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "RoadResQ lets you attach vehicle photos to help responders assess your issue.",
+          "cameraPermission": "RoadResQ lets you take vehicle photos to help responders assess your issue."
+        }
+      ]
+    ],
+    "ios": {
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RoadResQ uses your location to find nearby shops and track rescue responders."
+      }
+    },
+    "android": {
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.anonymous.roadresqmobile"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ]
+  }
+}

@@ -1,0 +1,106 @@
+-- PostgreSQL schema for the local RoadResQ database.
+-- This file mirrors the tables currently used by backend/src/server.js.
+
+create table if not exists users (
+  id bigint generated always as identity primary key,
+  username varchar(100) not null unique,
+  full_name varchar(255) not null,
+  email varchar(255) not null unique,
+  password_hash text not null,
+  phone varchar(50),
+  role varchar(50) not null,
+  status varchar(50) not null default 'active',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists motorist_profiles (
+  id bigint generated always as identity primary key,
+  user_id bigint not null unique references users(id) on delete cascade,
+  address text,
+  vehicle_type varchar(100),
+  vehicle_model varchar(100),
+  plate_number varchar(50),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists admin_profiles (
+  id bigint generated always as identity primary key,
+  user_id bigint not null unique references users(id) on delete cascade,
+  position varchar(100),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists agent_profiles (
+  id bigint generated always as identity primary key,
+  user_id bigint not null unique references users(id) on delete cascade,
+  business_name varchar(255) not null,
+  service_type varchar(100) not null,
+  service_area varchar(255),
+  license_number varchar(255),
+  or_cr_number varchar(255),
+  insurance_details text,
+  nbi_clearance_ref varchar(255),
+  verification_status varchar(50) not null default 'pending',
+  current_latitude numeric(10, 7),
+  current_longitude numeric(10, 7),
+  is_available boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists repair_shops (
+  id bigint generated always as identity primary key,
+  name varchar(255) not null,
+  owner_name varchar(255),
+  contact_number varchar(50),
+  email varchar(255),
+  address text not null,
+  latitude numeric(10, 7) not null,
+  longitude numeric(10, 7) not null,
+  status varchar(50) not null default 'active',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists agent_applications (
+  id bigint generated always as identity primary key,
+  user_id bigint not null references users(id) on delete cascade,
+  submitted_at timestamptz not null default now(),
+  status varchar(50) not null default 'pending',
+  remarks text
+);
+
+create table if not exists emergency_reports (
+  id bigint generated always as identity primary key,
+  motorist_user_id bigint not null references users(id) on delete cascade,
+  vehicle_type varchar(100) not null,
+  issue_summary text not null,
+  triage_level varchar(50) not null,
+  report_status varchar(50) not null default 'matched',
+  latitude numeric(10, 7) not null,
+  longitude numeric(10, 7) not null,
+  photo_url text,
+  video_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists emergency_report_symptoms (
+  id bigint generated always as identity primary key,
+  emergency_report_id bigint not null references emergency_reports(id) on delete cascade,
+  symptom_text varchar(255) not null
+);
+
+create table if not exists dispatches (
+  id bigint generated always as identity primary key,
+  emergency_report_id bigint not null references emergency_reports(id) on delete cascade,
+  agent_user_id bigint references users(id) on delete set null,
+  repair_shop_id bigint references repair_shops(id) on delete set null,
+  assigned_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  arrived_at timestamptz,
+  completed_at timestamptz,
+  dispatch_status varchar(50) not null default 'assigned'
+);
+
+alter table dispatches add constraint dispatches_dispatch_status_check 
+  check (dispatch_status in ('assigned', 'pending', 'accepted', 'arrived', 'completed', 'cancelled'));

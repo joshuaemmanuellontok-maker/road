@@ -1,0 +1,94 @@
+-- Reference seed data for the live PostgreSQL schema.
+-- These inserts match the current public.repair_shops columns.
+
+insert into repair_shops (
+  name,
+  owner_name,
+  contact_number,
+  email,
+  address,
+  latitude,
+  longitude,
+  status
+)
+select
+  'Mang Pedring Auto Repair',
+  'Pedro Cruz',
+  '0917-123-4567',
+  'mangpedring@roadresq.local',
+  'San Pablo City, Laguna',
+  14.0680000,
+  121.4180000,
+  'active'
+where not exists (
+  select 1 from repair_shops where name = 'Mang Pedring Auto Repair'
+);
+
+insert into repair_shops (
+  name,
+  owner_name,
+  contact_number,
+  email,
+  address,
+  latitude,
+  longitude,
+  status
+)
+select
+  'Bay Vulcanizing Shop',
+  'Ramon Diaz',
+  '0918-234-5678',
+  'bayvulcanizing@roadresq.local',
+  'Bay, Laguna',
+  14.0650000,
+  121.4200000,
+  'active'
+where not exists (
+  select 1 from repair_shops where name = 'Bay Vulcanizing Shop'
+);
+
+insert into repair_shops (
+  name,
+  owner_name,
+  contact_number,
+  email,
+  address,
+  latitude,
+  longitude,
+  status
+)
+select
+  'Calauan Towing Service',
+  'Arnel Pineda',
+  '0919-345-6789',
+  'calauantowing@roadresq.local',
+  'Calauan, Laguna',
+  14.0700000,
+  121.4150000,
+  'active'
+where not exists (
+  select 1 from repair_shops where name = 'Calauan Towing Service'
+);
+
+insert into repair_shops (
+  name,
+  owner_name,
+  contact_number,
+  email,
+  address,
+  latitude,
+  longitude,
+  status
+)
+select
+  'Los Banos Auto Electric',
+  'Efren Reyes',
+  '0920-456-7890',
+  'losbanos-electric@roadresq.local',
+  'Los Banos, Laguna',
+  14.0630000,
+  121.4220000,
+  'inactive'
+where not exists (
+  select 1 from repair_shops where name = 'Los Banos Auto Electric'
+);
