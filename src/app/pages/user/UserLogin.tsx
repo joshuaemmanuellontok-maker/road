@@ -23,6 +23,7 @@ export function UserLogin() {
       setStoredUserSession({
         ...user,
         username,
+        mobileNumber: (user as any).phone || "",
       });
       navigate("/user/dashboard");
     } catch (error) {
@@ -35,9 +36,11 @@ export function UserLogin() {
   return (
     <div className="min-h-screen bg-[#1f2937] flex flex-col relative">
       {/* Background Image with Blur */}
-      <div 
-        className="absolute inset-0 bg-cover bg-center"
-        style={{ backgroundImage: `url(${bgImage})` }}
+      <img
+        src={bgImage}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 w-full h-full object-cover"
       />
       <div className="absolute inset-0 backdrop-blur-md bg-[#1f2937]/85" />
 

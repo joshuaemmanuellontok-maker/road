@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router";
 import { Shield, X } from "lucide-react";
+import { loginAdmin, saveAdminSession } from "../api";
 
 interface AdminLoginModalProps {
   isOpen: boolean;
@@ -13,16 +14,35 @@ export function AdminLoginModal({ isOpen, onClose }: AdminLoginModalProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   useEffect(() => {
     setMounted(true);
     return () => setMounted(false);
   }, []);
 
-  const handleLogin = (e: FormEvent) => {
+  const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
-    navigate("/admin/dashboard");
-    onClose();
+    setErrorMessage("");
+    setIsLoading(true);
+
+    try {
+      const result = await loginAdmin({ username, password });
+      saveAdminSession({
+        id: result.id,
+        username: result.username || username,
+        role: result.role,
+      });
+      navigate("/admin/dashboard");
+      onClose();
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : "Login failed. Please try again."
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   if (!isOpen || !mounted) return null;
@@ -41,6 +61,7 @@ export function AdminLoginModal({ isOpen, onClose }: AdminLoginModalProps) {
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors z-10"
+          aria-label="Close admin login modal"
         >
           <X className="w-6 h-6" />
         </button>
@@ -54,6 +75,12 @@ export function AdminLoginModal({ isOpen, onClose }: AdminLoginModalProps) {
         </div>
 
         <form onSubmit={handleLogin} className="space-y-6">
+          {errorMessage && (
+            <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl">
+              <p className="text-red-400 text-sm">{errorMessage}</p>
+            </div>
+          )}
+
           <div>
             <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
               Admin Username
@@ -66,6 +93,7 @@ export function AdminLoginModal({ isOpen, onClose }: AdminLoginModalProps) {
               className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent"
               placeholder="Enter admin username"
               required
+              disabled={isLoading}
             />
           </div>
 
@@ -81,14 +109,16 @@ export function AdminLoginModal({ isOpen, onClose }: AdminLoginModalProps) {
               className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent"
               placeholder="Enter password"
               required
+              disabled={isLoading}
             />
           </div>
 
           <button
             type="submit"
-            className="w-full bg-[#ff6b3d] hover:bg-[#ff5722] text-white py-4 rounded-xl font-semibold transition-colors shadow-lg"
+            disabled={isLoading}
+            className="w-full bg-[#ff6b3d] hover:bg-[#ff5722] disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-4 rounded-xl font-semibold transition-colors shadow-lg"
           >
-            Sign In to Dashboard
+            {isLoading ? "Signing In..." : "Sign In to Dashboard"}
           </button>
         </form>
 

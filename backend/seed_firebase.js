@@ -97,10 +97,77 @@ async function seedFirebaseData() {
       console.log('⏭️  Admin user already exists');
     }
 
+    // Seed test motorist user
+    console.log('👤 Seeding test motorist user...');
+    const motoristExists = await db.collection(collections.users)
+      .where('username', '==', 'motorist')
+      .get();
+
+    if (motoristExists.empty) {
+      const motoristId = await db.collection(collections.users).add({
+        username: 'motorist',
+        full_name: 'Test Motorist',
+        email: 'motorist@roadresq.local',
+        password_hash: await bcrypt.hash('test123', 10),
+        phone: '0917-123-4567',
+        role: 'motorist',
+        status: 'active',
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+
+      await db.collection(collections.motoristProfiles).doc(motoristId.id).set({
+        user_id: motoristId.id,
+        created_at: serverTimestamp()
+      });
+
+      console.log('✅ Created test motorist user: motorist / test123');
+    } else {
+      console.log('⏭️  Test motorist user already exists');
+    }
+
+    // Seed test agent user
+    console.log('👤 Seeding test agent user...');
+    const agentExists = await db.collection(collections.users)
+      .where('username', '==', 'agent')
+      .get();
+
+    if (agentExists.empty) {
+      const agentId = await db.collection(collections.users).add({
+        username: 'agent',
+        full_name: 'Test Agent',
+        email: 'agent@roadresq.local',
+        password_hash: await bcrypt.hash('test123', 10),
+        phone: '0918-234-5678',
+        role: 'agent',
+        status: 'active',
+        created_at: serverTimestamp(),
+        updated_at: serverTimestamp()
+      });
+
+      await db.collection(collections.agentProfiles).doc(agentId.id).set({
+        user_id: agentId.id,
+        business_name: 'Test Auto Repair',
+        service_type: 'mechanic',
+        service_area: 'San Pablo City, Laguna',
+        verification_status: 'approved',
+        is_available: true,
+        current_latitude: 14.0680000,
+        current_longitude: 121.4180000,
+        created_at: serverTimestamp()
+      });
+
+      console.log('✅ Created test agent user: agent / test123');
+    } else {
+      console.log('⏭️  Test agent user already exists');
+    }
+
     console.log('🎉 Firebase seeding complete!');
     console.log('');
     console.log('📋 Test accounts:');
     console.log('   Admin: admin / admin123');
+    console.log('   Motorist: motorist / test123');
+    console.log('   Agent: agent / test123');
     console.log('   Motorist: Register new users via mobile app');
     console.log('   Agent: Apply via mobile app, approve via admin panel');
 

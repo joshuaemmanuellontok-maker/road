@@ -228,7 +228,7 @@ export function registerUser(payload: UserRegistrationPayload) {
 }
 
 export function loginUser(payload: AuthPayload) {
-  return apiRequest<{ id: string; fullName: string; email: string; role: string }>(
+  return apiRequest<{ id: string; fullName: string; email: string; phone: string; role: string }>(
     "/users/login",
     {
       method: "POST",
@@ -245,7 +245,7 @@ export function registerAgentApplication(payload: AgentRegistrationPayload) {
 }
 
 export function loginAgent(payload: AuthPayload) {
-  return apiRequest<{ id: string; fullName: string; email: string; role: string }>(
+  return apiRequest<{ id: string; fullName: string; email: string; phone: string; role: string }>(
     "/agents/login",
     {
       method: "POST",
@@ -431,3 +431,30 @@ export function calculateETA(distanceKm: number, averageSpeedKmh: number = 30): 
   // Assume average speed of 30 km/h in city traffic
   return Math.ceil((distanceKm / averageSpeedKmh) * 60); // ETA in minutes
 }
+
+export interface AvailableAgent {
+  id: string;
+  businessName: string;
+  phone: string;
+  currentLatitude: number;
+  currentLongitude: number;
+  isAvailable: boolean;
+  verificationStatus: string;
+}
+
+export async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
+  const payload = await apiRequest<unknown>("/agents/available");
+  return Array.isArray(payload) ? payload.map(agent => {
+    const row = isRecord(agent) ? agent : {};
+    return {
+      id: readString(row.id),
+      businessName: readString(row.businessName ?? row.business_name),
+      phone: readString(row.phone),
+      currentLatitude: parseFloat(readString(row.currentLatitude ?? row.current_latitude, "0")),
+      currentLongitude: parseFloat(readString(row.currentLongitude ?? row.current_longitude, "0")),
+      isAvailable: Boolean(row.isAvailable ?? row.is_available),
+      verificationStatus: readString(row.verificationStatus ?? row.verification_status),
+    };
+  }) : [];
+}
+

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { Wrench, MapPin, Clock, AlertCircle, CheckCircle, LogOut, Bell, ToggleLeft, ToggleRight, TrendingUp, DollarSign, Star, Navigation, Phone, Shield, Award, Activity, Calendar, XCircle, ArrowLeft } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { getStoredUserSession } from "../../session";
 
 // Mock dispatch requests
 const mockRequests = [
@@ -65,6 +66,14 @@ export function AgentDashboard() {
     responseTime: "4.2 min",
     completionRate: "98%",
   });
+
+  // Check user session on mount
+  useEffect(() => {
+    const session = getStoredUserSession();
+    if (!session) {
+      navigate("/agent/login");
+    }
+  }, [navigate]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);

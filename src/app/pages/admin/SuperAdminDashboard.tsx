@@ -256,7 +256,7 @@ export function SuperAdminDashboard() {
                     <div className="h-2 bg-white/20 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-yellow-400 to-green-400"
-                        style={{ width: `${stage.completionRate}%` }}
+                        style={{ width: `${Math.min(stage.completionRate, 100)}%` }}
                       ></div>
                     </div>
                   </div>

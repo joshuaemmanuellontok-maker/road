@@ -10,6 +10,7 @@ build/
 # local env files
 .env
 .env.*
+backend/firebase-service-account.json
 
 # logs
 npm-debug.log*

@@ -52,7 +52,7 @@ export const collections = {
 };
 
 // Helper to get server timestamp
-export const serverTimestamp = admin.firestore.FieldValue.serverTimestamp();
+export const serverTimestamp = () => admin.firestore.FieldValue.serverTimestamp();
 
 // Helper to get document reference
 export const docRef = (collection, id) => db.collection(collection).doc(id);

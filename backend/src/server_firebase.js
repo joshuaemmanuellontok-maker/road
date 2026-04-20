@@ -93,9 +93,15 @@ async function resolveUserReference(identifier) {
   ];
 
   for (const condition of conditions) {
-    const users = await getDocuments(collections.users, condition);
-    if (users.length > 0) {
-      return { userId: users[0].id, userProfileId: null };
+    const [field, value] = Object.entries(condition)[0];
+    let query = db.collection(collections.users);
+    if (value !== undefined && value !== null) {
+      query = query.where(field, '==', value);
+    }
+
+    const snapshot = await query.get();
+    if (!snapshot.empty) {
+      return { userId: snapshot.docs[0].id, userProfileId: null };
     }
   }
 
@@ -267,6 +273,7 @@ app.get("/api/repair-shops", async (_request, response, next) => {
 app.post("/api/users/login", async (request, response, next) => {
   try {
     const { username, password } = request.body ?? {};
+    console.log(`[USER LOGIN] Username: ${username}`);
 
     if (!username || !password) {
       response.status(400).json({ error: "Username and password are required." });
@@ -275,27 +282,35 @@ app.post("/api/users/login", async (request, response, next) => {
 
     // Find user by username, email, or phone
     const reference = await resolveUserReference(username);
+    console.log(`[USER LOGIN] Reference found: ${reference.userId}`);
     if (!reference.userId) {
+      console.log(`[USER LOGIN] User not found`);
       response.status(401).json({ error: "Invalid username or password." });
       return;
     }
 
     const user = await getDocument(collections.users, reference.userId);
+    console.log(`[USER LOGIN] User document: ${user?.username}, role: ${user?.role}`);
     if (!user || user.role !== 'motorist') {
+      console.log(`[USER LOGIN] User not found or not motorist`);
       response.status(401).json({ error: "Invalid username or password." });
       return;
     }
 
     const isValidPassword = await verifyPassword(password, user.password_hash);
+    console.log(`[USER LOGIN] Password valid: ${isValidPassword}`);
     if (!isValidPassword) {
+      console.log(`[USER LOGIN] Invalid password`);
       response.status(401).json({ error: "Invalid username or password." });
       return;
     }
 
+    console.log(`[USER LOGIN] Login successful for: ${username}`);
     response.json({
       id: user.id,
       fullName: user.full_name,
       email: user.email,
+      phone: user.phone,
       role: user.role,
     });
   } catch (error) {
@@ -337,6 +352,7 @@ app.post("/api/agents/login", async (request, response, next) => {
       id: user.id,
       fullName: user.full_name,
       email: user.email,
+      phone: user.phone,
       role: user.role,
     });
   } catch (error) {
@@ -618,6 +634,102 @@ app.put("/api/agents/:agentId/availability", async (request, response, next) => 
     response.json({
       user_id: agentId,
       is_available: isAvailable
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/agents/available", async (_request, response, next) => {
+  try {
+    // Get all available, approved agents
+    const agents = await getDocuments(collections.agentProfiles, {
+      is_available: true,
+      verification_status: "approved"
+    });
+
+    // Fetch user data for each agent
+    const results = await Promise.all(agents.map(async (agent) => {
+      try {
+        const user = await getDocument(collections.users, agent.user_id);
+        return {
+          id: agent.user_id,
+          businessName: agent.business_name,
+          phone: user?.phone,
+          currentLatitude: agent.current_latitude,
+          currentLongitude: agent.current_longitude,
+          isAvailable: agent.is_available,
+          verificationStatus: agent.verification_status,
+        };
+      } catch (error) {
+        console.error(`Error fetching user for agent ${agent.user_id}:`, error);
+        return null;
+      }
+    }));
+
+    // Filter out nulls and return only agents with valid location
+    const validAgents = results.filter(agent => 
+      agent && agent.currentLatitude && agent.currentLongitude
+    );
+
+    response.json(validAgents);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/dispatches/:dispatchId", async (request, response, next) => {
+  try {
+    const { dispatchId } = request.params;
+    const dispatch = await getDocument(collections.dispatches, dispatchId);
+
+    if (!dispatch) {
+      response.status(404).json({ error: "Dispatch not found." });
+      return;
+    }
+
+    // Fetch related documents
+    const emergencyReport = dispatch.emergency_report_id 
+      ? await getDocument(collections.emergencyReports, dispatch.emergency_report_id)
+      : null;
+    
+    const motoristUser = emergencyReport?.motorist_user_id
+      ? await getDocument(collections.users, emergencyReport.motorist_user_id)
+      : null;
+
+    const agentUser = dispatch.agent_user_id
+      ? await getDocument(collections.users, dispatch.agent_user_id)
+      : null;
+
+    const agentProfile = dispatch.agent_user_id
+      ? await getDocument(collections.agentProfiles, dispatch.agent_user_id)
+      : null;
+
+    response.json({
+      id: dispatch.id,
+      dispatchStatus: dispatch.dispatch_status,
+      assignedAt: dispatch.assigned_at,
+      acceptedAt: dispatch.accepted_at,
+      arrivedAt: dispatch.arrived_at,
+      completedAt: dispatch.completed_at,
+      motorist: motoristUser ? {
+        id: motoristUser.id,
+        fullName: motoristUser.full_name,
+        phone: motoristUser.phone,
+      } : null,
+      motoristLocation: emergencyReport ? {
+        latitude: emergencyReport.latitude,
+        longitude: emergencyReport.longitude,
+        label: emergencyReport.vehicle_type,
+      } : null,
+      agent: agentUser && agentProfile ? {
+        id: agentUser.id,
+        fullName: agentUser.full_name,
+        phone: agentUser.phone,
+        businessName: agentProfile.business_name,
+        currentLatitude: agentProfile.current_latitude,
+        currentLongitude: agentProfile.current_longitude,
+      } : null,
     });
   } catch (error) {
     next(error);

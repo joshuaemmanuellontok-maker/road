@@ -73,9 +73,11 @@ export function AgentRegister() {
   return (
     <div className="min-h-screen bg-[#1f2937] flex flex-col relative">
       {/* Background Image with Blur */}
-      <div 
-        className="absolute inset-0 bg-cover bg-center"
-        style={{ backgroundImage: `url(${bgImage})` }}
+      <img
+        src={bgImage}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 w-full h-full object-cover"
       />
       <div className="absolute inset-0 backdrop-blur-md bg-[#1f2937]/85" />
 
@@ -135,10 +137,11 @@ export function AgentRegister() {
 
                 <form onSubmit={handleSubmitInfo} className="space-y-5">
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <label htmlFor="ownerName" className="block text-sm font-medium text-gray-300 mb-2">
                       Owner's Full Name
                     </label>
                     <input
+                      id="ownerName"
                       name="ownerName"
                       type="text"
                       value={formData.ownerName}
@@ -150,10 +153,11 @@ export function AgentRegister() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <label htmlFor="mobileNumber" className="block text-sm font-medium text-gray-300 mb-2">
                       Mobile Number
                     </label>
                     <input
+                      id="mobileNumber"
                       name="mobileNumber"
                       type="tel"
                       value={formData.mobileNumber}
@@ -165,10 +169,11 @@ export function AgentRegister() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <label htmlFor="serviceCategory" className="block text-sm font-medium text-gray-300 mb-2">
                       Service Category
                     </label>
                     <select
+                      id="serviceCategory"
                       name="serviceCategory"
                       value={formData.serviceCategory}
                       onChange={handleChange}
@@ -183,10 +188,11 @@ export function AgentRegister() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                    <label htmlFor="serviceArea" className="block text-sm font-medium text-gray-300 mb-2">
                       Service Area Coverage
                     </label>
                     <input
+                      id="serviceArea"
                       name="serviceArea"
                       type="text"
                       value={formData.serviceArea}
@@ -199,10 +205,11 @@ export function AgentRegister() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-2">
+                      <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
                         Username
                       </label>
                       <input
+                        id="username"
                         name="username"
                         type="text"
                         value={formData.username}
@@ -212,10 +219,11 @@ export function AgentRegister() {
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-300 mb-2">
+                      <label htmlFor="password" className="block text-sm font-medium text-gray-300 mb-2">
                         Password
                       </label>
                       <input
+                        id="password"
                         name="password"
                         type="password"
                         value={formData.password}
