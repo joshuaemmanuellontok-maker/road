@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Wrench, MapPin, Clock, AlertCircle, CheckCircle, LogOut, Bell, ToggleLeft, ToggleRight, TrendingUp, DollarSign, Star, Navigation, Phone, Shield, Award, Activity, Calendar, XCircle, ArrowLeft } from "lucide-react";
+import { Wrench, MapPin, Clock, AlertCircle, CheckCircle, LogOut, Bell, ToggleLeft, ToggleRight, TrendingUp, DollarSign, Star, Navigation, Phone, Shield, Award, Activity, Calendar, XCircle, ArrowLeft, MessageSquare } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { getStoredUserSession } from "../../session";
+import { fetchDispatchHistory, type DispatchHistoryEntry } from "../../api";
 
 // Mock dispatch requests
 const mockRequests = [
@@ -43,12 +44,6 @@ const weeklyEarnings = [
   { day: "Sun", amount: 1300 },
 ];
 
-const recentJobs = [
-  { id: 1, motorist: "Ana Reyes", service: "Flat tire repair", time: "1 hour ago", fee: "₱350", rating: 5 },
-  { id: 2, motorist: "Carlos Mendoza", service: "Battery replacement", time: "3 hours ago", fee: "₱800", rating: 5 },
-  { id: 3, motorist: "Linda Cruz", service: "Tire vulcanizing", time: "5 hours ago", fee: "₱250", rating: 4 },
-];
-
 export function AgentDashboard() {
   const navigate = useNavigate();
   const [isOnline, setIsOnline] = useState(true);
@@ -56,6 +51,8 @@ export function AgentDashboard() {
   const [activeRequest, setActiveRequest] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"requests" | "earnings" | "history">("requests");
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [feedbackHistory, setFeedbackHistory] = useState<DispatchHistoryEntry[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
   const [stats] = useState({
     todayJobs: 3,
     weeklyJobs: 18,
@@ -78,6 +75,28 @@ export function AgentDashboard() {
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const session = getStoredUserSession();
+    if (!session?.id || session.role !== "agent") {
+      setFeedbackLoading(false);
+      return;
+    }
+
+    const loadFeedbackHistory = async () => {
+      try {
+        setFeedbackLoading(true);
+        const history = await fetchDispatchHistory(session.id, "agent");
+        setFeedbackHistory(history);
+      } catch (loadError) {
+        console.error("Failed to load responder Job History:", loadError);
+      } finally {
+        setFeedbackLoading(false);
+      }
+    };
+
+    loadFeedbackHistory();
   }, []);
 
   const handleAcceptRequest = (requestId: string) => {
@@ -107,7 +126,7 @@ export function AgentDashboard() {
                 <Wrench className="w-5 h-5 text-white" />
               </div>
               <div>
-                <span className="text-lg font-bold text-white">Agent Hub</span>
+                <span className="text-lg font-bold text-white">Responder Hub</span>
                 <div className="flex items-center gap-1 text-xs text-gray-400">
                   <Clock className="w-3 h-3" />
                   <span>{currentTime.toLocaleTimeString()}</span>
@@ -194,6 +213,16 @@ export function AgentDashboard() {
               </motion.div>
             </button>
           </div>
+        </div>
+
+        <div className="mb-6 flex justify-end">
+          <button
+            onClick={() => navigate("/community/forum")}
+            className="inline-flex items-center gap-2 rounded-xl border border-gray-700 bg-gray-800 px-4 py-3 font-semibold text-white transition-colors hover:border-[#ff6b3d] hover:text-[#ff9a7a]"
+          >
+            <MessageSquare className="w-5 h-5" />
+            Community Forum
+          </button>
         </div>
 
         {/* Stats Grid */}
@@ -507,39 +536,72 @@ export function AgentDashboard() {
 
         {activeTab === "history" && (
           <div className="space-y-4">
-            {recentJobs.map((job) => (
-              <div key={job.id} className="bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-700">
-                <div className="flex items-start justify-between">
-                  <div className="flex items-start gap-4 flex-1">
-                    <div className="w-12 h-12 bg-[#ff6b3d]/20 rounded-full flex items-center justify-center">
-                      <CheckCircle className="w-6 h-6 text-[#ff6b3d]" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h4 className="font-semibold text-white">{job.service}</h4>
-                        <span className="px-2 py-1 bg-[#ff6b3d]/20 text-[#ff6b3d] text-xs font-semibold rounded-full border border-[#ff6b3d]/30">
-                          COMPLETED
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-400 mb-2">Motorist: {job.motorist}</p>
-                      <div className="flex items-center gap-4 text-sm text-gray-400">
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-4 h-4" />
-                          {job.time}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Star className="w-4 h-4 fill-yellow-500 text-yellow-500" />
-                          {job.rating}/5
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-2xl font-bold text-[#ff6b3d]">{job.fee}</p>
-                  </div>
+            <div className="bg-gray-800 rounded-2xl p-6 shadow-sm border border-gray-700">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Job History</h3>
+                  <p className="mt-1 text-sm text-gray-400">
+                    Completed jobs move here after you submit your motorist feedback.
+                  </p>
+                </div>
+                <div className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-300">
+                  {feedbackHistory.length} total
                 </div>
               </div>
-            ))}
+
+              {feedbackLoading ? (
+                <div className="mt-4 rounded-xl border border-blue-500/40 bg-blue-900/20 px-4 py-3 text-sm text-blue-100">
+                  Loading Job History...
+                </div>
+              ) : feedbackHistory.length > 0 ? (
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  {feedbackHistory.slice(0, 6).map((item) => (
+                      <button
+                        key={item.id}
+                        onClick={() => navigate(`/feedback/${item.dispatchId}`)}
+                        className="rounded-xl border border-gray-700 bg-gray-900/60 p-4 text-left transition-colors hover:border-[#ff6b3d]/50 hover:bg-gray-900"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-white">
+                              Completed job
+                            </p>
+                            <p className="mt-1 text-sm text-gray-400">{item.counterpartName}</p>
+                          </div>
+                          <span className="rounded-full bg-[#ff6b3d]/15 px-2 py-1 text-xs font-semibold text-[#ff9a7a]">
+                            {item.viewerFeedback?.overallRating ?? 0}/5
+                          </span>
+                        </div>
+                        <div className="mt-3 flex items-center gap-1">
+                          {Array.from({ length: 5 }, (_, index) => (
+                            <Star
+                              key={`${item.id}-${index}`}
+                              className={`w-4 h-4 ${
+                                index < (item.viewerFeedback?.overallRating ?? 0)
+                                  ? "fill-yellow-500 text-yellow-500"
+                                  : "text-gray-600"
+                              }`}
+                            />
+                          ))}
+                        </div>
+                        <p className="mt-3 line-clamp-2 text-sm text-gray-300">
+                          {item.viewerFeedback?.comment || "No additional notes were included in this review."}
+                        </p>
+                        <p className="mt-3 text-xs text-gray-400">
+                          {item.serviceLabel} at {item.locationLabel || "Roadside location"}
+                        </p>
+                        <p className="mt-3 text-xs text-gray-500">
+                          Dispatch <span className="font-mono">{item.dispatchId}</span>
+                        </p>
+                      </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="mt-4 rounded-xl border border-gray-700 bg-gray-900/50 px-4 py-6 text-center">
+                  <p className="text-sm text-gray-300">No Job History yet.</p>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </main>

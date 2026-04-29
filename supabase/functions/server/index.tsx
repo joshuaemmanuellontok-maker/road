@@ -1,11 +1,13 @@
-import { Hono } from "npm:hono";
-import { cors } from "npm:hono/cors";
-import { logger } from "npm:hono/logger";
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { logger } from "hono/logger";
+import type { Context } from "hono";
 import * as kv from "./kv_store.tsx";
+
 const app = new Hono();
 
 // Enable logger
-app.use('*', logger(console.log));
+app.use("*", logger(console.log));
 
 // Enable CORS for all routes and methods
 app.use(
@@ -20,7 +22,7 @@ app.use(
 );
 
 // Health check endpoint
-app.get("/make-server-59d42d7c/health", (c) => {
+app.get("/make-server-59d42d7c/health", (c: Context) => {
   return c.json({ status: "ok" });
 });
 

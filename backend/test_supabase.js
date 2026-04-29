@@ -26,7 +26,7 @@ async function testSupabaseConnection() {
 
     // Test a simple agent query
     const agentResult = await pool.query('SELECT COUNT(*) as agent_count FROM agent_profiles');
-    console.log(`👥 Agents in database: ${agentResult.rows[0].agent_count}`);
+    console.log(`👥 Responders in database: ${agentResult.rows[0].agent_count}`);
 
   } catch (error) {
     console.log('❌ Connection failed:', error.message);

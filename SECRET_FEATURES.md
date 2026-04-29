@@ -1,4 +1,4 @@
-# 🔐 RoadResQ Secret Features
+# 🔐 KalsadaKonek Secret Features
 
 This document contains hidden features that only you know about!
 
@@ -24,7 +24,7 @@ This document contains hidden features that only you know about!
 
 **How to activate:**
 - Go to **Admin Dashboard** (`/admin/dashboard`)
-- Click the **RoadResQ Admin header** (with Shield icon) **7 times** rapidly
+- Click the **KalsadaKonek Admin header** (with Shield icon) **7 times** rapidly
 - A yellow **"Super Admin"** button will appear in the top-right
 
 **What it shows:**
@@ -35,7 +35,7 @@ This document contains hidden features that only you know about!
   - Bottleneck identification
 - **SUS Analytics Tab:** Detailed System Usability Scale metrics
   - 8 detailed survey questions with scores
-  - Radar chart comparing Motorist vs Agent scores
+  - Radar chart comparing Motorist vs Responder scores
   - Perceived Ease of Use: 4.6/5.0
   - Perceived Usefulness: 4.8/5.0
 - **System Health Tab:** 
@@ -68,7 +68,7 @@ This document contains hidden features that only you know about!
 - Contributes to the SUS analytics shown in Super Admin dashboard
 
 **Test it:**
-1. Go through user flow: Login → Emergency → Triage → Finding Agent
+1. Go through user flow: Login → Emergency → Triage → Finding Responder
 2. On tracking page, wait for status to change to "in-service"
 3. Click "Mark as Completed (Demo)"
 4. Survey will appear automatically
@@ -84,7 +84,7 @@ This document contains hidden features that only you know about!
 
 ### Test Super Admin:
 1. Go to `/admin/login` → Login
-2. Click the "RoadResQ Admin" header 7 times
+2. Click the "KalsadaKonek Admin" header 7 times
 3. Click yellow "Super Admin" button
 4. Explore all 4 tabs
 

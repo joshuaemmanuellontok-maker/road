@@ -1,4 +1,4 @@
-# Supabase Setup for RoadResQ Backend
+# Supabase Setup for KalsadaKonek Backend
 
 ## 1. Create Supabase Project
 1. Open your Supabase dashboard.

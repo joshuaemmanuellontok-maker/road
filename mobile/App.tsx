@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Image,
   ImageBackground,
   Pressable,
   SafeAreaView,
@@ -16,61 +17,128 @@ import MapView, { Marker, Polyline } from "react-native-maps";
 import * as Location from "expo-location";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
-import * as Notifications from "expo-notifications";
+import Constants from "expo-constants";
 import {
   createEmergencyDispatch,
   fetchRepairShops,
   registerUserProfile,
+  registerCommunityProfile,
   submitAgentApplication,
+  fetchForumThreads,
+  createForumThread,
+  createForumReply,
+  createSubscriptionPayment,
+  createCommunityRedemption,
   loginUser as apiLoginUser,
   loginAgent as apiLoginAgent,
+  loginCommunity as apiLoginCommunity,
+  awardCommunityForumVisit,
+  fetchCommunityProfile,
+  fetchCommunityRewardOptions,
+  fetchCommunityRedemptions,
   updateAgentLocation,
   updateAgentAvailability,
   fetchAgentDispatches,
   acceptDispatch,
   declineDispatch,
-  updateDispatchStatus,
+  completeDispatch,
+  fetchDispatchHistory,
   findNearbyAgents,
   fetchDispatchDetails,
   getRoute,
   calculateDistance,
   calculateETA,
+  type CredentialFilePayload,
   type DbRepairShop,
   type DispatchDetails,
+  type DispatchHistoryEntry,
+  type ForumReply,
+  type ForumThread,
+  type ForumTopic,
+  type CommunityProfile,
+  type CommunityRewardOption,
+  type CommunityRedemption,
+  type AgentPaymentProfile,
+  type SubscriptionPlan,
+  type SubscriptionPayment,
+  fetchAgentPaymentProfile,
+  updateAgentPaymentProfile,
+  uploadAgentBalanceProof,
 } from "./src/lib/roadresqApi";
 import { SERVICE_CATEGORY_LABELS, type ServiceCategory } from "../packages/shared/src";
+import { MotorietTrackingScreen } from "./src/components/MotorietTrackingScreen";
+import { AgentTrackingScreen } from "./src/components/AgentTrackingScreen";
 
-// Configure notifications
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-  }),
-});
+let notificationsModulePromise: Promise<typeof import("expo-notifications") | null> | null = null;
+
+const getNotificationsModule = async () => {
+  if (Constants.appOwnership === "expo") {
+    return null;
+  }
+
+  if (!notificationsModulePromise) {
+    notificationsModulePromise = import("expo-notifications")
+      .then((module) => {
+        module.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowAlert: true,
+            shouldShowBanner: true,
+            shouldShowList: true,
+            shouldPlaySound: true,
+            shouldSetBadge: false,
+          }),
+        });
+        return module;
+      })
+      .catch((error) => {
+        console.warn("Notifications module unavailable in this environment:", error);
+        return null;
+      });
+  }
+
+  return notificationsModulePromise;
+};
 
 // Notification functions
 const requestNotificationPermissions = async () => {
-  const { status } = await Notifications.requestPermissionsAsync();
-  return status === 'granted';
+  try {
+    const Notifications = await getNotificationsModule();
+    if (!Notifications) {
+      return false;
+    }
+
+    const { status } = await Notifications.requestPermissionsAsync();
+    return status === "granted";
+  } catch (error) {
+    console.warn("Notification permissions unavailable in this environment:", error);
+    return false;
+  }
 };
 
 const sendLocalNotification = async (title: string, body: string) => {
-  await Notifications.scheduleNotificationAsync({
-    content: {
-      title,
-      body,
-      sound: 'default',
-    },
-    trigger: null, // Show immediately
-  });
+  try {
+    const Notifications = await getNotificationsModule();
+    if (!Notifications) {
+      return;
+    }
+
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body,
+        sound: "default",
+      },
+      trigger: null, // Show immediately
+    });
+  } catch (error) {
+    console.warn("Local notifications unavailable in this environment:", error);
+  }
 };
 
-type Screen = "role" | "user-login" | "user-register" | "user-triage" | "user-finding-agent" | "agent-login" | "agent-register" | "user-app" | "agent-app";
-type UserTab = "explore" | "emergency" | "tracking";
-type AgentTab = "requests" | "navigation" | "stats";
+type Screen = "role" | "user-login" | "user-register" | "user-triage" | "user-finding-agent" | "agent-login" | "agent-register" | "community-login" | "community-register" | "user-app" | "agent-app" | "community-app";
+type UserTab = "subscription" | "explore" | "emergency" | "tracking" | "forum";
+type AgentTab = "requests" | "navigation" | "stats" | "profile" | "forum";
+type CommunityTab = "rewards" | "forum";
 type Coords = { latitude: number; longitude: number };
 type Errors = { identity?: string; password?: string };
 type Shop = {
@@ -114,16 +182,24 @@ type RegisterForm = {
 type AgentRegisterForm = {
   ownerName: string;
   mobileNumber: string;
-  serviceCategory: string;
+  organizationName: string;
+  serviceCategories: string[];
   serviceArea: string;
   username: string;
   password: string;
+  liabilityAcknowledged: boolean;
 };
+type SelectedCredentialFile = {
+  name: string;
+  uri: string;
+  mimeType: string;
+};
+type ForumReplyDrafts = Record<string, string>;
 type CredentialFiles = {
-  driversLicense: string | null;
-  vehicleRegistration: string | null;
-  insurance: string | null;
-  nbiClearance: string | null;
+  driversLicense: SelectedCredentialFile | null;
+  vehicleRegistration: SelectedCredentialFile | null;
+  insurance: SelectedCredentialFile | null;
+  nbiClearance: SelectedCredentialFile | null;
 };
 
 const mechanicalSymptoms = [
@@ -154,6 +230,106 @@ const historySeed = [
   "Vulcanizing - Linda Cruz - PHP 250",
 ];
 const categories = Object.entries(SERVICE_CATEGORY_LABELS) as [ServiceCategory, string][];
+const forumTopics: Array<{ value: ForumTopic; label: string }> = [
+  { value: "general", label: "General" },
+  { value: "agent", label: "Responders" },
+  { value: "motorist", label: "Motorists" },
+  { value: "payment", label: "Payments" },
+  { value: "road", label: "Roads" },
+  { value: "safety", label: "Safety" },
+];
+
+const forumTopicLabels: Record<ForumTopic, string> = {
+  general: "General",
+  agent: "Responder Concern",
+  motorist: "Motorist Concern",
+  payment: "Payment",
+  road: "Road Condition",
+  safety: "Safety",
+};
+
+const subscriptionOffers: Array<{
+  value: SubscriptionPlan;
+  label: string;
+  price: string;
+  tagline: string;
+  description: string;
+  coverageKm: number;
+  features: string[];
+}> = [
+  {
+    value: "monthly",
+    label: "Monthly",
+    price: "PHP 149",
+    tagline: "Flexible monthly access",
+    description: "Best for occasional motorists who want premium photo upload and priority support.",
+    coverageKm: 5,
+    features: [
+      "Responder search coverage up to 5 km",
+      "Photo upload for faster issue assessment",
+      "Priority support handling",
+      "Manual payment verification by admin",
+    ],
+  },
+  {
+    value: "six_months",
+    label: "6 Months",
+    price: "PHP 699",
+    tagline: "Balanced long-term value",
+    description: "Balanced option for regular drivers who want longer premium access at a lower rate.",
+    coverageKm: 10,
+    features: [
+      "Responder search coverage up to 10 km",
+      "Photo upload and priority support",
+      "Lower cost across extended coverage period",
+      "Ideal for regular commuters and fleets",
+    ],
+  },
+  {
+    value: "annual",
+    label: "Annual",
+    price: "PHP 1,299",
+    tagline: "Maximum yearly coverage",
+    description: "Best value for year-round roadside coverage and premium reporting access.",
+    coverageKm: 20,
+    features: [
+      "Responder search coverage up to 20 km",
+      "Best value for year-round assistance",
+      "Photo upload and premium support access",
+      "Recommended for high-dependability usage",
+    ],
+  },
+];
+
+function formatSubscriptionPlanLabel(plan: SubscriptionPlan | null) {
+  if (plan === "six_months") return "6 Months";
+  if (plan === "annual") return "Annual";
+  if (plan === "monthly") return "Monthly";
+  return "Free";
+}
+
+function getMotoristAgentSearchRadiusKm(subscriptionStatus: "active" | "inactive", plan: SubscriptionPlan | null) {
+  if (subscriptionStatus !== "active") {
+    return 1;
+  }
+
+  if (plan === "monthly") return 5;
+  if (plan === "six_months") return 10;
+  if (plan === "annual") return 20;
+  return 5;
+}
+
+function parseCurrencyAmount(value: string): number {
+  const numeric = Number(value.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function formatCurrencyAmount(value: number): string {
+  return `PHP ${value.toLocaleString("en-PH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
 
 function mapDbShop(shop: DbRepairShop): Shop {
   return {
@@ -170,6 +346,49 @@ function mapDbShop(shop: DbRepairShop): Shop {
   };
 }
 
+async function toCredentialPayload(file: SelectedCredentialFile): Promise<CredentialFilePayload> {
+  const response = await fetch(file.uri);
+  const blob = await response.blob();
+
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("Failed to encode credential file."));
+    };
+    reader.onerror = () => reject(new Error("Failed to read credential file."));
+    reader.readAsDataURL(blob);
+  });
+
+  return {
+    name: file.name,
+    type: file.mimeType,
+    dataUrl,
+  };
+}
+
+function formatForumTimestamp(value: string | null): string {
+  if (!value) {
+    return "Just now";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Just now";
+  }
+
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export default function App() {
   const [shopData, setShopData] = useState<Shop[]>(shops);
   const [backendMessage, setBackendMessage] = useState("Using demo-ready mobile data until backend records load.");
@@ -177,12 +396,16 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("role");
   const [userTab, setUserTab] = useState<UserTab>("explore");
   const [agentTab, setAgentTab] = useState<AgentTab>("requests");
+  const [communityTab, setCommunityTab] = useState<CommunityTab>("rewards");
   const [userIdentity, setUserIdentity] = useState("");
   const [userPassword, setUserPassword] = useState("");
   const [agentIdentity, setAgentIdentity] = useState("");
   const [agentPassword, setAgentPassword] = useState("");
+  const [communityIdentity, setCommunityIdentity] = useState("");
+  const [communityPassword, setCommunityPassword] = useState("");
   const [userLoginLoading, setUserLoginLoading] = useState(false);
   const [agentLoginLoading, setAgentLoginLoading] = useState(false);
+  const [communityLoginLoading, setCommunityLoginLoading] = useState(false);
   const [registerForm, setRegisterForm] = useState<RegisterForm>({
     fullName: "",
     mobileNumber: "",
@@ -195,10 +418,12 @@ export default function App() {
   const [agentRegisterForm, setAgentRegisterForm] = useState<AgentRegisterForm>({
     ownerName: "",
     mobileNumber: "",
-    serviceCategory: "",
+    organizationName: "",
+    serviceCategories: [],
     serviceArea: "",
     username: "",
     password: "",
+    liabilityAcknowledged: false,
   });
   const [credentialFiles, setCredentialFiles] = useState<CredentialFiles>({
     driversLicense: null,
@@ -209,7 +434,26 @@ export default function App() {
   const [agentRegisterError, setAgentRegisterError] = useState("");
   const [userErrors, setUserErrors] = useState<Errors>({});
   const [agentErrors, setAgentErrors] = useState<Errors>({});
+  const [communityErrors, setCommunityErrors] = useState<Errors>({});
+  const [userId, setUserId] = useState<string | null>(null);
   const [userName, setUserName] = useState("Motorist");
+  const [communityId, setCommunityId] = useState<string | null>(null);
+  const [communityName, setCommunityName] = useState("Community Member");
+  const [communityProfile, setCommunityProfile] = useState<CommunityProfile | null>(null);
+  const [communityRewardOptions, setCommunityRewardOptions] = useState<CommunityRewardOption[]>([]);
+  const [communityRedemptions, setCommunityRedemptions] = useState<CommunityRedemption[]>([]);
+  const [communityRewardId, setCommunityRewardId] = useState("");
+  const [communityGcashName, setCommunityGcashName] = useState("");
+  const [communityGcashNumber, setCommunityGcashNumber] = useState("");
+  const [communityLoading, setCommunityLoading] = useState(false);
+  const [communitySubmitting, setCommunitySubmitting] = useState(false);
+  const [motoristSubscriptionStatus, setMotoristSubscriptionStatus] = useState<"active" | "inactive">("inactive");
+  const [motoristSubscriptionPlan, setMotoristSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
+  const [motoristSubscriptionExpiresAt, setMotoristSubscriptionExpiresAt] = useState<string | null>(null);
+  const [selectedSubscriptionOffer, setSelectedSubscriptionOffer] = useState<SubscriptionPlan>("monthly");
+  const [subscriptionReferenceNote, setSubscriptionReferenceNote] = useState("");
+  const [subscriptionPaymentSubmitting, setSubscriptionPaymentSubmitting] = useState(false);
+  const [latestSubscriptionPayment, setLatestSubscriptionPayment] = useState<SubscriptionPayment | null>(null);
   const [agentName, setAgentName] = useState("Responder");
   const [userLocation, setUserLocation] = useState(baseLocation);
   const [locationLabel, setLocationLabel] = useState("San Pablo City, Laguna - National Highway");
@@ -222,48 +466,110 @@ export default function App() {
   const [triageDescription, setTriageDescription] = useState("");
   const [triagePhotos, setTriagePhotos] = useState<string[]>([]);
   const [findingAgent, setFindingAgent] = useState(true);
+  const [requestSubmitting, setRequestSubmitting] = useState(false);
   const [matchedAgent, setMatchedAgent] = useState<AgentMatch | null>(null);
   const [trackingStatus, setTrackingStatus] = useState("matched");
   const [elapsed, setElapsed] = useState(0);
   const [sla, setSla] = useState(480);
   const [agentLocation, setAgentLocation] = useState<Coords>({ latitude: 14.086, longitude: 121.447 });
   const [route, setRoute] = useState<Array<{ latitude: number; longitude: number }>>([]);
-  const [availability, setAvailability] = useState(true);
+  const [availability, setAvailability] = useState(false);
   const [requests, setRequests] = useState<Request[]>([]);
   const [jobHistory, setJobHistory] = useState<string[]>([]);
+  const [motoristHistory, setMotoristHistory] = useState<DispatchHistoryEntry[]>([]);
+  const [agentHistory, setAgentHistory] = useState<DispatchHistoryEntry[]>([]);
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
   const [liveRequestId, setLiveRequestId] = useState<string | null>(null);
   const [liveDispatchId, setLiveDispatchId] = useState<string | null>(null);
   const [liveDispatchDetails, setLiveDispatchDetails] = useState<DispatchDetails | null>(null);
-  const [agentId, setAgentId] = useState<string | null>(null);
   const [agentDispatches, setAgentDispatches] = useState<DispatchDetails[]>([]);
+  const [agentId, setAgentId] = useState<string | null>(null);
   const [activeDispatchId, setActiveDispatchId] = useState<string | null>(null);
+  const [completedAgentDispatchId, setCompletedAgentDispatchId] = useState<string | null>(null);
   const [navStatus, setNavStatus] = useState<"en-route" | "arrived" | "working">("en-route");
   const [fee, setFee] = useState("PHP 350");
   const [editingFee, setEditingFee] = useState(false);
   const [feeDraft, setFeeDraft] = useState("PHP 350");
+  const [forumThreads, setForumThreads] = useState<ForumThread[]>([]);
+  const [forumLoading, setForumLoading] = useState(false);
+  const [forumError, setForumError] = useState("");
+  const [forumTitle, setForumTitle] = useState("");
+  const [forumBody, setForumBody] = useState("");
+  const [forumTopic, setForumTopic] = useState<ForumTopic>("general");
+  const [forumPosting, setForumPosting] = useState(false);
+  const [forumReplyDrafts, setForumReplyDrafts] = useState<ForumReplyDrafts>({});
+  const [forumReplyingId, setForumReplyingId] = useState<string | null>(null);
+  const [agentPaymentProfile, setAgentPaymentProfile] = useState<AgentPaymentProfile | null>(null);
+  const [agentGcashName, setAgentGcashName] = useState("");
+  const [agentGcashNumber, setAgentGcashNumber] = useState("");
+  const [agentPayoutNotes, setAgentPayoutNotes] = useState("");
+  const [agentPaymentSaving, setAgentPaymentSaving] = useState(false);
+  const [agentBalanceProofUploading, setAgentBalanceProofUploading] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
+    motoristSubscription: true,
+    motoristHistory: false,
+    agentProfile: false,
+    agentWallet: false,
+    agentPayment: false,
+    communityRewardCenter: true,
+    communityRecentRewards: false,
+    communityCoinRules: false,
+  });
 
   const filteredShops = useMemo(() => (shopFilter === "all" ? shopData : shopData.filter((s) => s.category === shopFilter)), [shopData, shopFilter]);
   const selectedShop = filteredShops.find((s) => s.id === selectedShopId) ?? filteredShops[0];
   const activeRequest = activeRequestId ? requests.find((r) => r.id === activeRequestId) ?? null : null;
   const activeDispatch = activeDispatchId ? agentDispatches.find((d) => d.id === activeDispatchId) ?? null : null;
   const activeAgentRequest = activeDispatch;
+  const selectedCommunityReward = useMemo(
+    () => communityRewardOptions.find((option) => option.id === communityRewardId) ?? null,
+    [communityRewardId, communityRewardOptions],
+  );
+  const selectedSubscriptionOfferDetails = useMemo(
+    () => subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer) ?? subscriptionOffers[0],
+    [selectedSubscriptionOffer],
+  );
+  const motoristAgentSearchRadiusKm = useMemo(
+    () => getMotoristAgentSearchRadiusKm(motoristSubscriptionStatus, motoristSubscriptionPlan),
+    [motoristSubscriptionPlan, motoristSubscriptionStatus],
+  );
+  const activeMotoristLocation = useMemo(
+    () =>
+      activeAgentRequest?.motorist
+        ? {
+            latitude: activeAgentRequest.motorist.latitude,
+            longitude: activeAgentRequest.motorist.longitude,
+          }
+        : userLocation,
+    [activeAgentRequest, userLocation],
+  );
   const pendingAgentDispatches = useMemo(
     () => agentDispatches.filter((dispatch) => dispatch.dispatchStatus === "pending"),
     [agentDispatches]
   );
+  const openAgentDispatches = useMemo(
+    () =>
+      agentDispatches.filter((dispatch) =>
+        ["pending", "accepted", "arrived", "in_progress"].includes(dispatch.dispatchStatus),
+      ),
+    [agentDispatches],
+  );
+  const completedAgentEarnings = useMemo(
+    () => agentHistory.reduce((sum, item) => sum + (item.payment?.serviceAmount ?? 0), 0),
+    [agentHistory],
+  );
   const navigationMapCenter = useMemo(() => {
-    if (!activeAgentRequest) return userLocation;
+    if (!activeAgentRequest) return activeMotoristLocation;
     return {
-      latitude: (agentLocation.latitude + userLocation.latitude) / 2,
-      longitude: (agentLocation.longitude + userLocation.longitude) / 2,
+      latitude: (agentLocation.latitude + activeMotoristLocation.latitude) / 2,
+      longitude: (agentLocation.longitude + activeMotoristLocation.longitude) / 2,
     };
-  }, [activeAgentRequest, agentLocation, userLocation]);
+  }, [activeAgentRequest, activeMotoristLocation, agentLocation]);
 
   const navigationDistance = useMemo(() => {
     if (!activeAgentRequest) return 0;
-    return calculateDistance(agentLocation.latitude, agentLocation.longitude, userLocation.latitude, userLocation.longitude);
-  }, [activeAgentRequest, agentLocation, userLocation]);
+    return calculateDistance(agentLocation.latitude, agentLocation.longitude, activeMotoristLocation.latitude, activeMotoristLocation.longitude);
+  }, [activeAgentRequest, activeMotoristLocation, agentLocation]);
 
   const navigationETA = useMemo(() => {
     if (!activeAgentRequest) return 0;
@@ -272,7 +578,9 @@ export default function App() {
 
   useEffect(() => {
     if (!agentId || activeDispatchId || screen !== "agent-app") return;
-    const active = agentDispatches.find((dispatch) => dispatch.dispatchStatus !== "pending");
+    const active = agentDispatches.find((dispatch) =>
+      ["accepted", "arrived", "in_progress"].includes(dispatch.dispatchStatus),
+    );
     if (!active) return;
 
     setActiveDispatchId(active.id);
@@ -300,23 +608,76 @@ export default function App() {
     };
 
     const loadAgentDispatches = async () => {
-      if (!agentId) return;
+      if (!agentId || screen !== "agent-app") return;
       try {
         const dispatches = await fetchAgentDispatches(agentId);
         if (active) {
           setAgentDispatches(dispatches);
         }
       } catch (error) {
-        console.warn("Failed to load agent dispatches:", error);
+        console.warn("Failed to load responder dispatches:", error);
+      }
+    };
+
+    const loadMotoristHistory = async () => {
+      if (!userId || screen !== "user-app") return;
+      try {
+        const history = await fetchDispatchHistory(userId, "motorist");
+        if (active) {
+          setMotoristHistory(history);
+        }
+      } catch (error) {
+        console.warn("Failed to load motorist history:", error);
+      }
+    };
+
+    const loadAgentHistory = async () => {
+      if (!agentId || screen !== "agent-app") return;
+      try {
+        const history = await fetchDispatchHistory(agentId, "agent");
+        if (active) {
+          setAgentHistory(history);
+        }
+      } catch (error) {
+        console.warn("Failed to load responder history:", error);
+      }
+    };
+
+    const loadAgentPaymentProfile = async () => {
+      if (!agentId || screen !== "agent-app") return;
+      try {
+        const profile = await fetchAgentPaymentProfile(agentId);
+        if (active) {
+          setAgentPaymentProfile(profile);
+          setAgentGcashName(profile.gcashName);
+          setAgentGcashNumber(profile.gcashNumber);
+          setAgentPayoutNotes(profile.payoutNotes);
+        }
+      } catch (error) {
+        console.warn("Failed to load responder payment profile:", error);
       }
     };
 
     void loadRepairShops();
-    void loadAgentDispatches();
-
-    const interval = setInterval(() => {
+    if (screen === "agent-app") {
       void loadAgentDispatches();
-    }, 2000);
+      void loadAgentHistory();
+      void loadAgentPaymentProfile();
+    }
+    if (screen === "user-app") {
+      void loadMotoristHistory();
+    }
+
+    const interval = screen === "agent-app"
+      ? setInterval(() => {
+          void loadAgentDispatches();
+          void loadAgentHistory();
+        }, 10000)
+      : screen === "user-app"
+        ? setInterval(() => {
+            void loadMotoristHistory();
+          }, 10000)
+      : null;
 
     // Setup notifications
     const setupNotifications = async () => {
@@ -327,47 +688,51 @@ export default function App() {
 
     return () => {
       active = false;
-      clearInterval(interval);
+      if (interval) {
+        clearInterval(interval);
+      }
     };
-  }, [agentId]);
+  }, [agentId, userId, screen]);
 
   useEffect(() => {
-    if (!liveDispatchId || screen !== "user-app" || userTab !== "tracking") return;
+    if (screen !== "community-app" || !communityId) {
+      return;
+    }
+
     let active = true;
 
-    const refreshDispatchDetails = async () => {
+    const loadCommunityData = async () => {
       try {
-        const dispatchDetails = await fetchDispatchDetails(liveDispatchId);
-        if (!active) return;
-        setLiveDispatchDetails(dispatchDetails);
-        if (dispatchDetails.agent?.currentLatitude && dispatchDetails.agent?.currentLongitude) {
-          setAgentLocation({ latitude: dispatchDetails.agent.currentLatitude, longitude: dispatchDetails.agent.currentLongitude });
+        setCommunityLoading(true);
+        const [visitReward, rewards, redemptions] = await Promise.all([
+          awardCommunityForumVisit(communityId),
+          fetchCommunityRewardOptions(),
+          fetchCommunityRedemptions(),
+        ]);
+
+        if (!active) {
+          return;
         }
-        const statusMap: Record<string, string> = {
-          matched: "matched",
-          assigned: "matched",
-          accepted: "accepted",
-          "en-route": "en-route",
-          arrived: "arrived",
-          "in-service": "in-service",
-          in_service: "in-service",
-          completed: "completed",
-        };
-        const nextStatus = statusMap[dispatchDetails.dispatchStatus] ?? "matched";
-        setTrackingStatus((currentStatus) => currentStatus === nextStatus ? currentStatus : nextStatus);
+
+        setCommunityProfile(visitReward.profile);
+        setCommunityRewardOptions(rewards);
+        setCommunityRewardId((current) => current || rewards[0]?.id || "");
+        setCommunityRedemptions(redemptions.filter((item) => item.userId === communityId));
       } catch (error) {
-        console.warn("Failed to refresh live dispatch details:", error);
+        console.warn("Failed to load community data:", error);
+      } finally {
+        if (active) {
+          setCommunityLoading(false);
+        }
       }
     };
 
-    void refreshDispatchDetails();
-    const interval = setInterval(refreshDispatchDetails, 2000);
+    void loadCommunityData();
 
     return () => {
       active = false;
-      clearInterval(interval);
     };
-  }, [screen, userTab, liveDispatchId]);
+  }, [screen, communityId]);
 
   // Calculate route when tracking agent location or navigating
   useEffect(() => {
@@ -384,23 +749,23 @@ export default function App() {
       try {
         const routeData = await getRoute(
           [agentLocation.latitude, agentLocation.longitude],
-          [userLocation.latitude, userLocation.longitude]
+          [activeMotoristLocation.latitude, activeMotoristLocation.longitude]
         );
         if (routeData) {
-          setRoute(routeData.geometry.map(coord => ({ latitude: coord[1], longitude: coord[0] })));
+          setRoute(routeData.geometry.map((coord) => ({ latitude: coord[0], longitude: coord[1] })));
         }
       } catch (error) {
         console.error("Route calculation failed:", error);
         // Fallback to direct line
-        setRoute([
-          { latitude: agentLocation.latitude, longitude: agentLocation.longitude },
-          { latitude: userLocation.latitude, longitude: userLocation.longitude }
-        ]);
-      }
-    };
+          setRoute([
+            { latitude: agentLocation.latitude, longitude: agentLocation.longitude },
+            { latitude: activeMotoristLocation.latitude, longitude: activeMotoristLocation.longitude }
+          ]);
+        }
+      };
 
-    calculateRoute();
-  }, [screen, userTab, agentTab, activeAgentRequest, agentLocation, userLocation]);
+      calculateRoute();
+  }, [screen, userTab, agentTab, activeAgentRequest, activeMotoristLocation, agentLocation]);
 
   useEffect(() => {
     if (screen !== "user-app" || userTab !== "tracking") return;
@@ -415,24 +780,62 @@ export default function App() {
   }, [screen, userTab, trackingStatus]);
 
   useEffect(() => {
+    const shouldLoadForum =
+      (screen === "user-app" && userTab === "forum" && Boolean(userId)) ||
+      (screen === "agent-app" && agentTab === "forum" && Boolean(agentId)) ||
+      (screen === "community-app" && Boolean(communityId));
+
+    if (!shouldLoadForum) {
+      return;
+    }
+
+    let active = true;
+
+    const loadForumThreads = async () => {
+      try {
+        setForumLoading(true);
+        setForumError("");
+        const threads = await fetchForumThreads();
+        if (active) {
+          setForumThreads(threads);
+        }
+      } catch (error) {
+        if (active) {
+          setForumError(error instanceof Error ? error.message : "Failed to load forum posts.");
+        }
+      } finally {
+        if (active) {
+          setForumLoading(false);
+        }
+      }
+    };
+
+    void loadForumThreads();
+
+    return () => {
+      active = false;
+    };
+  }, [screen, userTab, agentTab, userId, agentId]);
+
+  useEffect(() => {
     if (screen !== "user-app" || userTab !== "tracking") return;
     if (liveRequestId) return;
     const ids = [
       setTimeout(() => {
         setTrackingStatus("accepted");
-        sendLocalNotification("Agent Dispatched", "Your rescue agent has been assigned and is preparing to help you.");
+        sendLocalNotification("Responder Dispatched", "Your rescue responder has been assigned and is preparing to help you.");
       }, 3000),
       setTimeout(() => {
         setTrackingStatus("en-route");
-        sendLocalNotification("Agent En Route", "Your rescue agent is now on the way to your location.");
+        sendLocalNotification("Responder En Route", "Your rescue responder is now on the way to your location.");
       }, 6000),
       setTimeout(() => {
         setTrackingStatus("arrived");
-        sendLocalNotification("Agent Arrived", "Your rescue agent has arrived at your location.");
+        sendLocalNotification("Responder Arrived", "Your rescue responder has arrived at your location.");
       }, 12000),
       setTimeout(() => {
         setTrackingStatus("in-service");
-        sendLocalNotification("Service Started", "Your rescue agent has begun working on your vehicle.");
+        sendLocalNotification("Service Started", "Your rescue responder has begun working on your vehicle.");
       }, 17000),
     ];
     return () => ids.forEach(clearTimeout);
@@ -473,9 +876,9 @@ export default function App() {
 
         locationSubscription = await Location.watchPositionAsync(
           {
-            accuracy: Location.Accuracy.High,
-            timeInterval: 5000, // Update every 5 seconds
-            distanceInterval: 10, // Update every 10 meters
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 2000, // Update every 2 seconds
+            distanceInterval: 3, // Update every 3 meters
           },
           async (location) => {
             const { latitude, longitude } = location.coords;
@@ -487,7 +890,7 @@ export default function App() {
                 await updateAgentLocation(agentId, { latitude, longitude });
               }
             } catch (error) {
-              console.warn('Failed to update agent location:', error);
+              console.warn("Failed to update responder location:", error);
             }
           }
         );
@@ -506,28 +909,6 @@ export default function App() {
     };
   }, [screen, activeAgentRequest, agentIdentity]);
 
-  // Periodic refresh of agent dispatches when online - faster polling for real-time updates
-  useEffect(() => {
-    if (screen !== "agent-app" || !agentId || !availability) return;
-
-    const fetchDispatches = async () => {
-      try {
-        const dispatches = await fetchAgentDispatches(agentId);
-        setAgentDispatches(dispatches);
-      } catch (error) {
-        console.warn('Failed to fetch agent dispatches:', error);
-      }
-    };
-
-    // Fetch immediately
-    fetchDispatches();
-
-    // Then fetch every 2 seconds for real-time updates
-    const interval = setInterval(fetchDispatches, 2000);
-
-    return () => clearInterval(interval);
-  }, [screen, agentId, availability]);
-
   // Update agent availability in backend when it changes
   useEffect(() => {
     if (screen !== "agent-app" || !agentId) return;
@@ -535,9 +916,18 @@ export default function App() {
     const updateAvailability = async () => {
       try {
         await updateAgentAvailability(agentId, availability);
-        console.log(`Agent availability updated to: ${availability}`);
+        console.log(`Responder availability updated to: ${availability}`);
       } catch (error) {
-        console.warn('Failed to update agent availability:', error);
+        console.warn("Failed to update responder availability:", error);
+        setAvailability(false);
+        if (availability) {
+          Alert.alert(
+            "Wallet readiness required",
+            error instanceof Error
+              ? error.message
+              : "A valid wallet readiness verification is required before going online.",
+          );
+        }
       }
     };
 
@@ -552,11 +942,11 @@ export default function App() {
       try {
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
-          console.warn('Agent location permission not granted');
+          console.warn("Responder location permission not granted");
           return;
         }
 
-        const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+        const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest });
         const currentCoords = {
           latitude: current.coords.latitude,
           longitude: current.coords.longitude,
@@ -566,9 +956,9 @@ export default function App() {
         if (agentId) {
           await updateAgentLocation(agentId, currentCoords);
         }
-        console.log(`Agent location updated: ${currentCoords.latitude}, ${currentCoords.longitude}`);
+        console.log(`Responder location updated: ${currentCoords.latitude}, ${currentCoords.longitude}`);
       } catch (error) {
-        console.warn('Failed to update agent location:', error);
+        console.warn("Failed to update responder location:", error);
       }
     };
 
@@ -594,7 +984,11 @@ export default function App() {
           username: userIdentity.trim(),
           password: userPassword.trim(),
         });
+        setUserId(result.id);
         setUserName(result.fullName || userIdentity.trim());
+        setMotoristSubscriptionStatus(result.subscriptionStatus === "active" ? "active" : "inactive");
+        setMotoristSubscriptionPlan(result.subscriptionPlan ?? null);
+        setMotoristSubscriptionExpiresAt(result.subscriptionExpiresAt ?? null);
         setUserPassword("");
         setUserErrors({});
         setScreen("user-app");
@@ -625,6 +1019,7 @@ export default function App() {
         });
         setAgentName(result.fullName || agentIdentity.trim());
         setAgentId(result.id);
+        setAvailability(false);
         setAgentPassword("");
         setAgentErrors({});
         setScreen("agent-app");
@@ -639,6 +1034,123 @@ export default function App() {
         setAgentLoginLoading(false);
       }
     })();
+  };
+
+  const loginCommunity = () => {
+    const next = validate(communityIdentity, communityPassword);
+    setCommunityErrors(next);
+    if (Object.keys(next).length) return;
+
+    setCommunityLoginLoading(true);
+    void (async () => {
+      try {
+        const result = await apiLoginCommunity({
+          username: communityIdentity.trim(),
+          password: communityPassword.trim(),
+        });
+        setCommunityId(result.id);
+        setCommunityName(result.fullName || communityIdentity.trim());
+        setCommunityProfile({
+          id: result.id,
+          fullName: result.fullName || communityIdentity.trim(),
+          role: "community",
+          communityCoins: result.communityCoins ?? 0,
+          communityLifetimeCoins: result.communityLifetimeCoins ?? 0,
+          lastCommunityRewardAt: result.lastCommunityRewardAt ?? null,
+        });
+        setCommunityPassword("");
+        setCommunityErrors({});
+        setScreen("community-app");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Login failed. Please check your credentials.";
+        setCommunityErrors({
+          identity: message.includes("credentials") ? "Invalid username or password." : "",
+          password: message.includes("credentials") ? "Invalid username or password." : "",
+        });
+      } finally {
+        setCommunityLoginLoading(false);
+      }
+    })();
+  };
+
+  const saveAgentPaymentDetails = async () => {
+    if (!agentId) {
+      Alert.alert("Responder missing", "Please log in again to update your payment details.");
+      return;
+    }
+
+    if (!agentGcashName.trim() || !agentGcashNumber.trim()) {
+      Alert.alert("Missing details", "Please enter your GCash account name and GCash number.");
+      return;
+    }
+
+    try {
+      setAgentPaymentSaving(true);
+      const profile = await updateAgentPaymentProfile(agentId, {
+        gcashName: agentGcashName.trim(),
+        gcashNumber: agentGcashNumber.trim(),
+        payoutNotes: agentPayoutNotes.trim(),
+      });
+      setAgentPaymentProfile(profile);
+      setAgentGcashName(profile.gcashName);
+      setAgentGcashNumber(profile.gcashNumber);
+      setAgentPayoutNotes(profile.payoutNotes);
+      Alert.alert("Payment details saved", "Your GCash payout details were saved for admin settlement.");
+    } catch (error) {
+      Alert.alert(
+        "Save failed",
+        error instanceof Error ? error.message : "Could not save your GCash payout details.",
+      );
+    } finally {
+      setAgentPaymentSaving(false);
+    }
+  };
+
+  const submitAgentBalanceProof = async () => {
+    if (!agentId) {
+      Alert.alert("Responder missing", "Please log in again to upload your GCash balance proof.");
+      return;
+    }
+
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert("Permission needed", "Allow photo access to upload your GCash balance screenshot.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.8,
+        allowsMultipleSelection: false,
+      });
+
+      if (result.canceled || !result.assets[0]) {
+        return;
+      }
+
+      setAgentBalanceProofUploading(true);
+      const asset = result.assets[0];
+      const payload = await toCredentialPayload({
+        name: asset.fileName ?? `gcash-balance-${Date.now()}.jpg`,
+        uri: asset.uri,
+        mimeType: asset.mimeType ?? "image/jpeg",
+      });
+      const profile = await uploadAgentBalanceProof(agentId, payload);
+      setAgentPaymentProfile(profile);
+      setAvailability(false);
+      Alert.alert(
+        "Proof uploaded",
+        "Your wallet readiness proof was sent to admin for tier review. You can go online after approval.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Upload failed",
+        error instanceof Error ? error.message : "Could not upload your GCash balance proof.",
+      );
+    } finally {
+      setAgentBalanceProofUploading(false);
+    }
   };
 
   const registerUser = () => {
@@ -661,13 +1173,17 @@ export default function App() {
     setRegisterError("");
     void (async () => {
       try {
-        await registerUserProfile({
+        const result = await registerUserProfile({
           fullName: registerForm.fullName,
           mobileNumber: registerForm.mobileNumber,
           username: registerForm.username,
           password: registerForm.password,
         });
+        setUserId(result.id);
         setBackendMessage("User profile saved to PostgreSQL.");
+        setMotoristSubscriptionStatus("inactive");
+        setMotoristSubscriptionPlan(null);
+        setMotoristSubscriptionExpiresAt(null);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not save user profile.";
         setBackendMessage(`User registration fallback active: ${message}`);
@@ -679,6 +1195,55 @@ export default function App() {
       setUserName(registerForm.fullName);
       setScreen("user-app");
       setUserTab("explore");
+    })();
+  };
+
+  const registerCommunity = () => {
+    if (
+      !registerForm.fullName.trim() ||
+      !registerForm.mobileNumber.trim() ||
+      !registerForm.username.trim() ||
+      !registerForm.password.trim() ||
+      !registerForm.confirmPassword.trim()
+    ) {
+      setRegisterError("Please complete all fields.");
+      return;
+    }
+
+    if (registerForm.password !== registerForm.confirmPassword) {
+      setRegisterError("Passwords do not match.");
+      return;
+    }
+
+    setRegisterError("");
+    void (async () => {
+      try {
+        const result = await registerCommunityProfile({
+          fullName: registerForm.fullName,
+          mobileNumber: registerForm.mobileNumber,
+          username: registerForm.username,
+          password: registerForm.password,
+        });
+        setCommunityId(result.id);
+        setCommunityProfile({
+          id: result.id,
+          fullName: registerForm.fullName,
+          role: "community",
+          communityCoins: 0,
+          communityLifetimeCoins: 0,
+          lastCommunityRewardAt: null,
+        });
+        setBackendMessage("Community profile saved to PostgreSQL.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Could not save community profile.";
+        setBackendMessage(`Community registration fallback active: ${message}`);
+        Alert.alert("Registration not saved", message);
+      }
+
+      setCommunityIdentity(registerForm.username);
+      setCommunityPassword(registerForm.password);
+      setCommunityName(registerForm.fullName);
+      setScreen("community-app");
     })();
   };
 
@@ -703,6 +1268,26 @@ export default function App() {
     }
   };
 
+  const captureCurrentUserLocation = async () => {
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== "granted") {
+      throw new Error("Location permission is required.");
+    }
+
+    const current = await Location.getCurrentPositionAsync({
+      accuracy: Location.Accuracy.Highest,
+    });
+
+    const next = {
+      latitude: current.coords.latitude,
+      longitude: current.coords.longitude,
+    };
+
+    setUserLocation(next);
+    setLocationLabel(`Pinned near ${next.latitude.toFixed(5)}, ${next.longitude.toFixed(5)}`);
+    return next;
+  };
+
   const continueEmergency = () => {
     if (!serviceType || !issueSummary.trim()) {
       Alert.alert("Incomplete request", "Choose a service type and describe the issue first.");
@@ -720,6 +1305,14 @@ export default function App() {
   };
 
   const pickTriagePhoto = async () => {
+    if (motoristSubscriptionStatus !== "active") {
+      Alert.alert(
+        "Subscription required",
+        "Image upload is locked for free accounts. Subscribe first to unlock photo attachments and priority support.",
+      );
+      return;
+    }
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert("Permission needed", "Allow photo access to attach images for responders.");
@@ -740,7 +1333,7 @@ export default function App() {
 
   const continueFromTriage = async () => {
     if (selectedSymptoms.length === 0) {
-      Alert.alert("Select symptoms", "Choose at least one symptom before finding a rescue agent.");
+      Alert.alert("Select symptoms", "Choose at least one symptom before finding a rescue responder.");
       return;
     }
 
@@ -750,7 +1343,8 @@ export default function App() {
     setAgentSearchError("");
 
     try {
-      const nearbyAgents = await findNearbyAgents(userLocation.latitude, userLocation.longitude);
+      const currentUserLocation = await captureCurrentUserLocation();
+      const nearbyAgents = await findNearbyAgents(currentUserLocation.latitude, currentUserLocation.longitude, serviceType, userId);
       if (nearbyAgents && nearbyAgents.length > 0) {
         const agent = nearbyAgents[0];
         const matchedAgentData = {
@@ -766,9 +1360,9 @@ export default function App() {
         return;
       }
 
-      setAgentSearchError("No available rescue agents found nearby. Please try again later.");
+      setAgentSearchError(`No available rescue responders found within your ${motoristAgentSearchRadiusKm} km access range. Upgrade your subscription for wider responder coverage.`);
     } catch (error) {
-      console.warn("Failed to find real agents:", error);
+      console.warn("Failed to find real responders:", error);
       setAgentSearchError("Unable to reach the backend. Please check your connection and try again.");
     } finally {
       setFindingAgent(false);
@@ -779,11 +1373,11 @@ export default function App() {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission denied', 'Location permission is required for accurate agent tracking.');
+        Alert.alert('Permission denied', "Location permission is required for accurate responder tracking.");
         return;
       }
 
-      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest });
       const currentCoords = {
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
@@ -793,7 +1387,7 @@ export default function App() {
         await updateAgentLocation(agentId, currentCoords);
       }
     } catch (error) {
-      console.warn('Failed to refresh agent location:', error);
+      console.warn("Failed to refresh responder location:", error);
       Alert.alert('Location update failed', 'Could not get your current location. Please try again.');
     }
   };
@@ -807,7 +1401,7 @@ export default function App() {
         return;
       }
 
-      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest });
       const currentCoords = {
         latitude: current.coords.latitude,
         longitude: current.coords.longitude,
@@ -815,15 +1409,11 @@ export default function App() {
       setAgentLocation(currentCoords);
       if (agentId) {
         await updateAgentLocation(agentId, currentCoords);
-        if (!availability) {
-          setAvailability(true);
-          await updateAgentAvailability(agentId, true);
-        }
         const refreshedDispatches = await fetchAgentDispatches(agentId);
         setAgentDispatches(refreshedDispatches);
       }
     } catch (error) {
-      console.warn('Failed to detect agent location:', error);
+      console.warn("Failed to detect responder location:", error);
       Alert.alert('Location failed', 'Could not determine your current location. Please try again.');
     } finally {
       setDetecting(false);
@@ -836,6 +1426,7 @@ export default function App() {
     if (backendDispatch && agentId) {
       try {
         await acceptDispatch(id, agentId);
+        setCompletedAgentDispatchId(null);
         setActiveDispatchId(id);
         setAgentTab("navigation");
         setNavStatus("en-route");
@@ -845,6 +1436,7 @@ export default function App() {
       } catch (error) {
         console.warn("Failed to accept backend dispatch:", error);
         Alert.alert("Accept failed", "Could not accept the request through the backend. Trying local navigation mode.");
+        setCompletedAgentDispatchId(null);
         setActiveDispatchId(id);
         setAgentTab("navigation");
         setNavStatus("en-route");
@@ -853,6 +1445,7 @@ export default function App() {
         }
       }
     } else {
+      setCompletedAgentDispatchId(null);
       setActiveDispatchId(id);
       setAgentTab("navigation");
       setNavStatus("en-route");
@@ -870,7 +1463,20 @@ export default function App() {
   }, [screen, agentTab, activeAgentRequest]);
 
   const requestRescue = () => {
-    void (async () => {
+    if (requestSubmitting) {
+      return;
+    }
+
+    setRequestSubmitting(true);
+    const submitRequest = async () => {
+      let currentUserLocation = userLocation;
+
+      try {
+        currentUserLocation = await captureCurrentUserLocation();
+      } catch (error) {
+        console.warn("Using last known motorist location for dispatch:", error);
+      }
+
       const requestId = `REQ-${Date.now()}`;
       const nextRequest: Request = {
         id: requestId,
@@ -884,28 +1490,35 @@ export default function App() {
         symptoms: selectedSymptoms.length > 0 ? selectedSymptoms : [issueSummary],
       };
 
+      setLiveDispatchId(null);
+      setLiveDispatchDetails(null);
+
       try {
         const result = await createEmergencyDispatch({
+          userId: userId ?? undefined,
           username: userIdentity || registerForm.username || userName,
           mobileNumber: registerForm.mobileNumber || "N/A",
           locationLabel,
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
+          latitude: currentUserLocation.latitude,
+          longitude: currentUserLocation.longitude,
           serviceType,
           issueSummary: [issueSummary, triageDescription].filter(Boolean).join(" | "),
           symptoms: selectedSymptoms,
           matchedShopId: null,
           matchedAgentId: matchedAgent?.id ?? null,
         });
-        setLiveDispatchId(result.dispatchId);
-        setBackendMessage("Emergency report and dispatch saved to PostgreSQL.");
 
         const dispatchDetails = await fetchDispatchDetails(result.dispatchId);
+        setLiveDispatchId(result.dispatchId);
         setLiveDispatchDetails(dispatchDetails);
+        setBackendMessage("Emergency report and dispatch saved to PostgreSQL.");
+
         if (dispatchDetails.agent?.currentLatitude && dispatchDetails.agent?.currentLongitude) {
           setAgentLocation({ latitude: dispatchDetails.agent.currentLatitude, longitude: dispatchDetails.agent.currentLongitude });
         }
       } catch {
+        setLiveDispatchId(null);
+        setLiveDispatchDetails(null);
         setBackendMessage("Dispatch is still using local state because the database tables are not available yet.");
       }
 
@@ -922,7 +1535,13 @@ export default function App() {
       // Do not set artificial offset - use real device location only
       setScreen("user-app");
       setUserTab("tracking");
-    })();
+      setRequestSubmitting(false);
+    };
+
+    void submitRequest().catch((error) => {
+      console.warn("Failed to request rescue:", error);
+      setRequestSubmitting(false);
+    });
   };
 
   const findAnotherAgent = async () => {
@@ -931,9 +1550,10 @@ export default function App() {
     setAgentSearchError("");
 
     try {
-      const nearbyAgents = await findNearbyAgents(userLocation.latitude, userLocation.longitude);
+      const currentUserLocation = await captureCurrentUserLocation();
+      const nearbyAgents = await findNearbyAgents(currentUserLocation.latitude, currentUserLocation.longitude, serviceType, userId);
       if (!nearbyAgents || nearbyAgents.length === 0) {
-        setAgentSearchError("No available rescue agents found nearby. Please try again later.");
+        setAgentSearchError(`No additional rescue responders are available within your ${motoristAgentSearchRadiusKm} km access range right now.`);
         return;
       }
 
@@ -951,23 +1571,211 @@ export default function App() {
         services: nextAgent.services || [],
       });
     } catch (error) {
-      console.warn("Failed to refresh nearby agents:", error);
-      setAgentSearchError("Unable to refresh nearby agents. Please try again later.");
+      console.warn("Failed to refresh nearby responders:", error);
+      setAgentSearchError("Unable to refresh nearby responders. Please try again later.");
     } finally {
       setFindingAgent(false);
     }
+  };
+
+  const submitForumPost = async () => {
+    const currentRole =
+      screen === "agent-app"
+        ? "agent"
+        : screen === "community-app"
+          ? "community"
+          : "motorist";
+    const currentUserId =
+      currentRole === "agent"
+        ? agentId
+        : currentRole === "community"
+          ? communityId
+          : userId;
+
+    if (!currentUserId) {
+      setForumError("Please log in first before posting in the forum.");
+      return;
+    }
+
+    if (!forumTitle.trim() || !forumBody.trim()) {
+      setForumError("Please enter both a title and details for your post.");
+      return;
+    }
+
+    try {
+      setForumPosting(true);
+      setForumError("");
+      const created = await createForumThread({
+        authorUserId: currentUserId,
+        authorRole: currentRole,
+        title: forumTitle.trim(),
+        body: forumBody.trim(),
+        topic: forumTopic,
+      });
+
+      setForumThreads((current) => [created, ...current]);
+      setForumTitle("");
+      setForumBody("");
+      setForumTopic("general");
+      if (currentRole === "community" && communityId) {
+        const profile = await fetchCommunityProfile(communityId);
+        setCommunityProfile(profile);
+      }
+    } catch (error) {
+      setForumError(error instanceof Error ? error.message : "Could not publish your post.");
+    } finally {
+      setForumPosting(false);
+    }
+  };
+
+  const submitForumReply = async (threadId: string) => {
+    const currentRole =
+      screen === "agent-app"
+        ? "agent"
+        : screen === "community-app"
+          ? "community"
+          : "motorist";
+    const currentUserId =
+      currentRole === "agent"
+        ? agentId
+        : currentRole === "community"
+          ? communityId
+          : userId;
+    const draft = forumReplyDrafts[threadId]?.trim();
+
+    if (!currentUserId) {
+      setForumError("Please log in first before replying in the forum.");
+      return;
+    }
+
+    if (!draft) {
+      setForumError("Write a reply before sending.");
+      return;
+    }
+
+    try {
+      setForumReplyingId(threadId);
+      setForumError("");
+      const reply = await createForumReply(threadId, {
+        authorUserId: currentUserId,
+        authorRole: currentRole,
+        body: draft,
+      });
+
+      setForumThreads((current) =>
+        current.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                replies: [...thread.replies, reply],
+                replyCount: thread.replyCount + 1,
+                lastActivityAt: reply.createdAt,
+              }
+            : thread,
+        ),
+      );
+
+      setForumReplyDrafts((current) => ({ ...current, [threadId]: "" }));
+      if (currentRole === "community" && communityId) {
+        const profile = await fetchCommunityProfile(communityId);
+        setCommunityProfile(profile);
+      }
+    } catch (error) {
+      setForumError(error instanceof Error ? error.message : "Could not send your reply.");
+    } finally {
+      setForumReplyingId(null);
+    }
+  };
+
+  const submitSubscriptionPayment = async () => {
+    if (!userId) {
+      Alert.alert("Login required", "Please log in as a motorist before sending a payment notice.");
+      return;
+    }
+
+    try {
+      setSubscriptionPaymentSubmitting(true);
+      const payment = await createSubscriptionPayment({
+        userId,
+        subscriptionPlan: selectedSubscriptionOffer,
+        referenceNote: subscriptionReferenceNote.trim(),
+      });
+
+      setLatestSubscriptionPayment(payment);
+      setSubscriptionReferenceNote("");
+      Alert.alert(
+        "Payment notice sent",
+        "Your selected subscription payment has been sent to admin for manual confirmation.",
+      );
+    } catch (error) {
+      Alert.alert(
+        "Payment notice failed",
+        error instanceof Error ? error.message : "Could not send your payment notice.",
+      );
+    } finally {
+      setSubscriptionPaymentSubmitting(false);
+    }
+  };
+
+  const submitCommunityRedemption = async () => {
+    if (!communityId || !communityRewardId) {
+      Alert.alert("Reward unavailable", "Please choose a reward ticket first.");
+      return;
+    }
+
+    if (!communityGcashName.trim() || !communityGcashNumber.trim()) {
+      Alert.alert("Missing details", "Please enter your GCash name and GCash number.");
+      return;
+    }
+
+    try {
+      setCommunitySubmitting(true);
+      const result = await createCommunityRedemption({
+        userId: communityId,
+        rewardId: communityRewardId,
+        gcashName: communityGcashName.trim(),
+        gcashNumber: communityGcashNumber.trim(),
+      });
+
+      if (result.profile) {
+        setCommunityProfile(result.profile);
+      }
+      setCommunityRedemptions((current) => [result.redemption, ...current]);
+      setCommunityGcashName("");
+      setCommunityGcashNumber("");
+      Alert.alert("Ticket submitted", "Your reward ticket was sent to admin for manual GCash payout review.");
+    } catch (error) {
+      Alert.alert(
+        "Redemption failed",
+        error instanceof Error ? error.message : "Could not submit your reward ticket.",
+      );
+    } finally {
+      setCommunitySubmitting(false);
+    }
+  };
+
+  const toggleSection = (key: string) => {
+    setExpandedSections((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
   };
 
   const continueAgentRegisterInfo = () => {
     if (
       !agentRegisterForm.ownerName.trim() ||
       !agentRegisterForm.mobileNumber.trim() ||
-      !agentRegisterForm.serviceCategory.trim() ||
+      !agentRegisterForm.organizationName.trim() ||
+      agentRegisterForm.serviceCategories.length === 0 ||
       !agentRegisterForm.serviceArea.trim() ||
       !agentRegisterForm.username.trim() ||
       !agentRegisterForm.password.trim()
     ) {
       setAgentRegisterError("Please complete all fields before continuing.");
+      return;
+    }
+    if (!agentRegisterForm.liabilityAcknowledged) {
+      setAgentRegisterError("Please acknowledge the organization liability declaration before continuing.");
       return;
     }
     setAgentRegisterError("");
@@ -981,7 +1789,15 @@ export default function App() {
     });
 
     if (!result.canceled) {
-      setCredentialFiles((current) => ({ ...current, [field]: result.assets[0].name }));
+      const asset = result.assets[0];
+      setCredentialFiles((current) => ({
+        ...current,
+        [field]: {
+          name: asset.name,
+          uri: asset.uri,
+          mimeType: asset.mimeType ?? "application/octet-stream",
+        },
+      }));
     }
   };
 
@@ -997,16 +1813,31 @@ export default function App() {
         await submitAgentApplication({
           ownerName: agentRegisterForm.ownerName,
           mobileNumber: agentRegisterForm.mobileNumber,
-          serviceCategory: agentRegisterForm.serviceCategory,
+          organizationName: agentRegisterForm.organizationName,
+          serviceCategory: agentRegisterForm.serviceCategories[0],
+          serviceCategories: agentRegisterForm.serviceCategories,
           serviceArea: agentRegisterForm.serviceArea,
           username: agentRegisterForm.username,
           password: agentRegisterForm.password,
-          credentialManifest: credentialFiles,
+          liabilityAcknowledged: agentRegisterForm.liabilityAcknowledged,
+          credentialManifest: Object.fromEntries(
+            Object.entries(credentialFiles).map(([key, file]) => [key, file?.name ?? null]),
+          ),
+          credentialFiles: Object.fromEntries(
+            (
+              await Promise.all(
+                Object.entries(credentialFiles).map(async ([key, file]) => [
+                  key,
+                  file ? await toCredentialPayload(file) : null,
+                ]),
+              )
+            ).filter((entry): entry is [string, CredentialFilePayload] => entry[1] !== null),
+          ),
         });
-        setBackendMessage("Agent application saved to PostgreSQL.");
+        setBackendMessage("Responder application saved to PostgreSQL.");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Could not save agent application.";
-        setBackendMessage(`Agent application fallback active: ${message}`);
+        const message = error instanceof Error ? error.message : "Could not save responder application.";
+        setBackendMessage(`Responder application fallback active: ${message}`);
         Alert.alert("Application not saved", message);
       }
 
@@ -1016,44 +1847,323 @@ export default function App() {
     })();
   };
 
+  if (screen === "user-app" && userTab === "tracking" && liveDispatchId) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar barStyle="dark-content" />
+        <View style={styles.trackingShell}>
+          <View style={styles.trackingHeader}>
+            <Pressable style={styles.secondary} onPress={() => setUserTab("emergency")}>
+              <Text style={styles.secondaryText}>Back</Text>
+            </Pressable>
+            <View style={styles.flex}>
+              <Text style={styles.titleDark}>Live Tracking</Text>
+              <Text style={styles.textDark}>Watch your responder approach in real time.</Text>
+            </View>
+          </View>
+          <MotorietTrackingScreen
+            dispatchId={liveDispatchId}
+            motoristLocation={userLocation}
+            motoristName={userName}
+            motoristUserId={userId}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (screen === "agent-app" && agentTab === "navigation" && (activeDispatchId || completedAgentDispatchId)) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <StatusBar barStyle="dark-content" />
+        <View style={styles.trackingShell}>
+          <View style={styles.trackingHeader}>
+            <Pressable
+              style={styles.secondary}
+              onPress={() => {
+                setCompletedAgentDispatchId(null);
+                setAgentTab("requests");
+              }}
+            >
+              <Text style={styles.secondaryText}>Back</Text>
+            </Pressable>
+            <View style={styles.flex}>
+              <Text style={styles.titleDark}>Responder Navigation</Text>
+              <Text style={styles.textDark}>
+                {completedAgentDispatchId
+                  ? "Review the completed rescue and keep the handoff polished."
+                  : "Watch your route to the motorist in real time."}
+              </Text>
+            </View>
+          </View>
+          <AgentTrackingScreen
+            dispatchId={activeDispatchId ?? completedAgentDispatchId!}
+            agentLocation={agentLocation}
+            agentUserId={agentId}
+            agentName={agentName}
+            fee={fee}
+            feeDraft={feeDraft}
+            editingFee={editingFee}
+            navStatus={navStatus}
+            onBack={() => {
+              setCompletedAgentDispatchId(null);
+              setAgentTab("requests");
+            }}
+            onNavStatusChange={setNavStatus}
+            onFeeDraftChange={setFeeDraft}
+            onToggleEditFee={() => {
+              if (editingFee) {
+                setFee(feeDraft);
+              }
+              setEditingFee((current) => !current);
+            }}
+            onCompleteJob={() => {
+              const completedId = activeAgentRequest?.id ?? activeDispatchId;
+              if (!completedId) {
+                return;
+              }
+
+              setCompletedAgentDispatchId(completedId);
+              setActiveDispatchId(null);
+
+              if (activeAgentRequest) {
+                setAgentDispatches((current) => current.filter((item) => item.id !== activeAgentRequest.id));
+              }
+
+              if (activeRequestId === liveRequestId) {
+                setTrackingStatus("completed");
+              }
+
+              if (activeRequest) {
+                setJobHistory((current) => [
+                  `${activeRequest.symptoms[0] ?? "Service"} - ${activeRequest.motorist} - ${fee}`,
+                  ...current,
+                ]);
+                setRequests((current) => current.filter((item) => item.id !== activeRequest.id));
+              }
+
+              Alert.alert("Job completed", "Payment reminder sent to the motorist.");
+
+              if (completedId && agentId) {
+                (async () => {
+                  try {
+                    await completeDispatch(completedId, parseCurrencyAmount(fee));
+                    const refreshedDispatches = await fetchAgentDispatches(agentId);
+                    const refreshedHistory = await fetchDispatchHistory(agentId, "agent");
+                    setAgentDispatches(refreshedDispatches);
+                    setAgentHistory(refreshedHistory);
+                  } catch (error) {
+                    console.warn("Failed to complete job on backend:", error);
+                  }
+                })();
+              }
+            }}
+            onDeclineJob={() => {
+              const declinedId = activeAgentRequest?.id ?? activeDispatchId;
+              if (!declinedId) {
+                return;
+              }
+
+              Alert.alert(
+                "Decline Request",
+                "Are you sure you want to decline this active rescue request?",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  {
+                    text: "Decline",
+                    style: "destructive",
+                    onPress: () => {
+                      setCompletedAgentDispatchId(null);
+                      setActiveDispatchId(null);
+                      setAgentTab("requests");
+
+                      if (activeAgentRequest) {
+                        setAgentDispatches((current) => current.filter((item) => item.id !== activeAgentRequest.id));
+                      }
+
+                      if (activeRequest) {
+                        setRequests((current) => current.filter((item) => item.id !== activeRequest.id));
+                      }
+
+                      if (declinedId && agentId) {
+                        (async () => {
+                          try {
+                            await declineDispatch(declinedId, agentId);
+                            const refreshedDispatches = await fetchAgentDispatches(agentId);
+                            setAgentDispatches(refreshedDispatches);
+                          } catch (error) {
+                            console.warn("Failed to decline active dispatch:", error);
+                            Alert.alert("Decline failed", "Could not decline this dispatch right now.");
+                          }
+                        })();
+                      }
+                    },
+                  },
+                ],
+              );
+            }}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="light-content" />
       <ScrollView contentContainerStyle={styles.wrap}>
-        <ImageBackground
-          source={{ uri: "https://images.unsplash.com/photo-1504215680853-026ed2a45def?auto=format&fit=crop&w=1200&q=80" }}
-          style={styles.heroBackground}
-          imageStyle={styles.heroBackgroundImage}
-          blurRadius={20}
-        >
-          <View style={styles.heroOverlay} />
-          <View style={styles.heroContent}>
-            <Text style={styles.eyebrow}>RoadResQ</Text>
-            <Text style={styles.heroTitle}>Emergency Roadside Assistance</Text>
-            <Text style={styles.heroText}>Fast, secure roadside help with live GPS tracking, responder navigation, and emergency reporting.</Text>
-            <View style={styles.heroButtons}>
-              <Pressable style={styles.heroPrimary} onPress={() => setScreen("user-login")}> 
-                <Text style={styles.heroPrimaryText}>Get Help Now</Text>
-              </Pressable>
-              <Pressable style={styles.heroSecondary} onPress={() => setScreen("agent-login")}> 
-                <Text style={styles.heroSecondaryText}>Responder Access</Text>
-              </Pressable>
-            </View>
-          </View>
-        </ImageBackground>
-
         {screen === "role" && (
-          <View style={styles.card}>
-            <Text style={styles.title}>Choose your mobile role</Text>
-            <Pressable style={[styles.option, styles.optionActive]} onPress={() => setScreen("user-login")}>
-              <Text style={styles.optionTitle}>Motorist app</Text>
-              <Text style={styles.text}>Nearby shops, emergency reporting, and live responder tracking.</Text>
+          <>
+            <ImageBackground
+              source={{ uri: "https://images.unsplash.com/photo-1504215680853-026ed2a45def?auto=format&fit=crop&w=1200&q=80" }}
+              style={styles.heroBackground}
+              imageStyle={styles.heroBackgroundImage}
+              blurRadius={20}
+            >
+              <View style={styles.heroOverlay} />
+              <View style={styles.heroGlow} />
+              <View style={styles.heroGlowSecondary} />
+              <View style={styles.heroContent}>
+                <View style={styles.heroTopRow}>
+                  <View style={styles.heroBadge}>
+                    <Text style={styles.eyebrow}>KalsadaKonek</Text>
+                  </View>
+                  <View style={styles.heroTrustBadge}>
+                    <Text style={styles.heroTrustText}>Enterprise mobility suite</Text>
+                  </View>
+                </View>
+
+                <View style={styles.heroCopy}>
+                  <Text style={styles.heroLead}>Coordinated roadside operations</Text>
+                  <Text style={styles.heroTitle}>Emergency Roadside Assistance</Text>
+                  <Text style={styles.heroText}>A professional response platform for motorists, field responders, and community stakeholders with live GPS coordination, structured dispatch workflows, and incident reporting.</Text>
+                </View>
+
+                <View style={styles.heroHighlights}>
+                  <View style={styles.heroHighlightCard}>
+                    <Text style={styles.heroHighlightValue}>Live dispatch</Text>
+                    <Text style={styles.heroHighlightLabel}>Real-time request handling</Text>
+                  </View>
+                  <View style={styles.heroHighlightCard}>
+                    <Text style={styles.heroHighlightValue}>Tracked response</Text>
+                    <Text style={styles.heroHighlightLabel}>GPS-guided coordination</Text>
+                  </View>
+                </View>
+
+                <View style={styles.heroButtons}>
+                  <Pressable style={[styles.heroButton, styles.heroPrimary]} onPress={() => setScreen("user-login")}>
+                    <Text style={styles.heroPrimaryText}>Get Help Now</Text>
+                  </Pressable>
+                  <View style={styles.heroButtonRow}>
+                    <Pressable style={[styles.heroButton, styles.heroSecondary, styles.heroButtonSplit]} onPress={() => setScreen("agent-login")}>
+                      <Text style={styles.heroSecondaryText}>Responder Access</Text>
+                    </Pressable>
+                    <Pressable style={[styles.heroButton, styles.heroTertiary, styles.heroButtonSplit]} onPress={() => setScreen("community-login")}>
+                      <Text style={styles.heroTertiaryText}>Community Forum</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={styles.heroMetrics}>
+                  <View style={styles.heroMetricCard}>
+                    <Text style={styles.heroMetricLabel}>Coverage</Text>
+                    <Text style={styles.heroMetricValue}>Motorist, responder, community</Text>
+                  </View>
+                  <View style={styles.heroMetricCard}>
+                    <Text style={styles.heroMetricLabel}>Operations</Text>
+                    <Text style={styles.heroMetricValue}>Dispatch-ready workflows</Text>
+                  </View>
+                </View>
+              </View>
+            </ImageBackground>
+
+            <View style={[styles.card, styles.roleCard]}>
+            <View style={styles.roleHeader}>
+              <View style={styles.roleSectionBadge}>
+                <Text style={styles.roleSectionBadgeText}>Platform entry</Text>
+              </View>
+              <View>
+                <Text style={styles.title}>Choose your mobile role</Text>
+                <Text style={styles.roleSubtitle}>Select the workspace that matches your responsibility. Each path preserves the same system functions with a more polished professional presentation.</Text>
+              </View>
+            </View>
+
+            <Pressable style={[styles.option, styles.optionActive, styles.roleOptionCard]} onPress={() => setScreen("user-login")}>
+              <View style={styles.roleOptionTop}>
+                <View style={[styles.roleIconShell, styles.roleIconMotorist]}>
+                  <Text style={styles.roleIconText}>M</Text>
+                </View>
+                <View style={styles.roleContent}>
+                  <View style={styles.roleTitleRow}>
+                    <Text style={styles.optionTitle}>Motorist app</Text>
+                    <View style={styles.roleBadgeRecommended}>
+                      <Text style={styles.roleBadgeRecommendedText}>Primary access</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.text}>Nearby shops, emergency reporting, and live responder tracking.</Text>
+                </View>
+              </View>
+              <View style={styles.roleTagRow}>
+                <View style={styles.rolePill}>
+                  <Text style={styles.rolePillText}>Roadside help</Text>
+                </View>
+                <View style={styles.rolePillMuted}>
+                  <Text style={styles.rolePillTextMuted}>Live ETA visibility</Text>
+                </View>
+              </View>
             </Pressable>
-            <Pressable style={styles.option} onPress={() => setScreen("agent-login")}>
-              <Text style={styles.optionTitle}>Responder app</Text>
-              <Text style={styles.text}>Incoming requests, navigation, fee updates, and service stats.</Text>
+
+            <Pressable style={[styles.option, styles.roleOptionCard]} onPress={() => setScreen("agent-login")}>
+              <View style={styles.roleOptionTop}>
+                <View style={[styles.roleIconShell, styles.roleIconAgent]}>
+                  <Text style={styles.roleIconText}>A</Text>
+                </View>
+                <View style={styles.roleContent}>
+                  <View style={styles.roleTitleRow}>
+                    <Text style={styles.optionTitle}>Responder app</Text>
+                    <View style={styles.roleBadgeNeutral}>
+                      <Text style={styles.roleBadgeNeutralText}>Operations</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.text}>Incoming requests, navigation, fee updates, and service stats.</Text>
+                </View>
+              </View>
+              <View style={styles.roleTagRow}>
+                <View style={styles.rolePillMuted}>
+                  <Text style={styles.rolePillTextMuted}>Dispatch queue</Text>
+                </View>
+                <View style={styles.rolePillMuted}>
+                  <Text style={styles.rolePillTextMuted}>Navigation tools</Text>
+                </View>
+              </View>
             </Pressable>
-          </View>
+
+            <Pressable style={[styles.option, styles.roleOptionCard]} onPress={() => setScreen("community-login")}>
+              <View style={styles.roleOptionTop}>
+                <View style={[styles.roleIconShell, styles.roleIconCommunity]}>
+                  <Text style={styles.roleIconText}>C</Text>
+                </View>
+                <View style={styles.roleContent}>
+                  <View style={styles.roleTitleRow}>
+                    <Text style={styles.optionTitle}>Community app</Text>
+                    <View style={styles.roleBadgeNeutral}>
+                      <Text style={styles.roleBadgeNeutralText}>Public channel</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.text}>Forum-only access for public discussions, local updates, and community concerns.</Text>
+                </View>
+              </View>
+              <View style={styles.roleTagRow}>
+                <View style={styles.rolePillMuted}>
+                  <Text style={styles.rolePillTextMuted}>Community forum</Text>
+                </View>
+                <View style={styles.rolePillMuted}>
+                  <Text style={styles.rolePillTextMuted}>Local updates</Text>
+                </View>
+              </View>
+            </Pressable>
+            </View>
+          </>
         )}
 
         {screen === "user-login" && (
@@ -1093,7 +2203,7 @@ export default function App() {
 
         {screen === "agent-login" && (
           <>
-            <LoginCard badge="Responder" title="Agent Login" subtitle="Manage requests, navigate to motorists, and update service status." identityLabel="Agent ID or Username" identity={agentIdentity} password={agentPassword} errors={agentErrors} loading={agentLoginLoading} onBack={() => setScreen("role")} onIdentityChange={setAgentIdentity} onPasswordChange={setAgentPassword} onSubmit={loginAgent} />
+            <LoginCard badge="Responder" title="Responder Login" subtitle="Manage requests, navigate to motorists, and update service status." identityLabel="Responder ID or Username" identity={agentIdentity} password={agentPassword} errors={agentErrors} loading={agentLoginLoading} onBack={() => setScreen("role")} onIdentityChange={setAgentIdentity} onPasswordChange={setAgentPassword} onSubmit={loginAgent} />
             <View style={styles.card}>
               <Text style={styles.text}>Not registered yet?</Text>
               <Pressable style={styles.secondary} onPress={() => setScreen("agent-register")}>
@@ -1101,6 +2211,41 @@ export default function App() {
               </Pressable>
             </View>
           </>
+        )}
+
+        {screen === "community-login" && (
+          <>
+            <LoginCard badge="Community" title="Community Login" subtitle="Join the semi forum to share updates, ask concerns, and help stranded motorists." identityLabel="Username or Mobile Number" identity={communityIdentity} password={communityPassword} errors={communityErrors} loading={communityLoginLoading} onBack={() => setScreen("role")} onIdentityChange={setCommunityIdentity} onPasswordChange={setCommunityPassword} onSubmit={loginCommunity} />
+            <View style={styles.card}>
+              <Text style={styles.text}>Need a new community account?</Text>
+              <Pressable style={styles.secondary} onPress={() => setScreen("community-register")}>
+                <Text style={styles.secondaryText}>Create community account</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
+
+        {screen === "community-register" && (
+          <View style={styles.card}>
+            <View style={styles.between}>
+              <Pressable style={styles.secondary} onPress={() => setScreen("community-login")}><Text style={styles.secondaryText}>Back</Text></Pressable>
+              <Pill label="Community account" active />
+            </View>
+            <Text style={styles.title}>Create Community Account</Text>
+            <Text style={styles.text}>Sign up for forum-only access so you can help with local roadside concerns.</Text>
+            <Text style={styles.label}>Full name</Text>
+            <TextInput value={registerForm.fullName} onChangeText={(value) => setRegisterForm((current) => ({ ...current, fullName: value }))} placeholder="Juan Dela Cruz" placeholderTextColor="#94a3b8" style={styles.input} />
+            <Text style={styles.label}>Mobile number</Text>
+            <TextInput value={registerForm.mobileNumber} onChangeText={(value) => setRegisterForm((current) => ({ ...current, mobileNumber: value }))} placeholder="+63 917 123 4567" placeholderTextColor="#94a3b8" keyboardType="phone-pad" style={styles.input} />
+            <Text style={styles.label}>Username</Text>
+            <TextInput value={registerForm.username} onChangeText={(value) => setRegisterForm((current) => ({ ...current, username: value }))} placeholder="Choose a username" placeholderTextColor="#94a3b8" autoCapitalize="none" style={styles.input} />
+            <Text style={styles.label}>Password</Text>
+            <TextInput value={registerForm.password} onChangeText={(value) => setRegisterForm((current) => ({ ...current, password: value }))} placeholder="Create a strong password" placeholderTextColor="#94a3b8" secureTextEntry style={styles.input} />
+            <Text style={styles.label}>Confirm password</Text>
+            <TextInput value={registerForm.confirmPassword} onChangeText={(value) => setRegisterForm((current) => ({ ...current, confirmPassword: value }))} placeholder="Re-enter password" placeholderTextColor="#94a3b8" secureTextEntry style={styles.input} />
+            {registerError ? <Text style={styles.error}>{registerError}</Text> : null}
+            <Pressable style={styles.primary} onPress={registerCommunity}><Text style={styles.primaryText}>Create community account</Text></Pressable>
+          </View>
         )}
 
         {screen === "agent-register" && (
@@ -1123,16 +2268,30 @@ export default function App() {
 
             {agentRegisterStep === "info" ? (
               <>
-                <Text style={styles.title}>Agent Registration</Text>
+                <Text style={styles.title}>Responder Registration</Text>
                 <Text style={styles.text}>Step 1: Business information</Text>
                 <Text style={styles.label}>Owner's full name</Text>
                 <TextInput value={agentRegisterForm.ownerName} onChangeText={(value) => setAgentRegisterForm((current) => ({ ...current, ownerName: value }))} placeholder="Juan Dela Cruz" placeholderTextColor="#94a3b8" style={styles.input} />
                 <Text style={styles.label}>Mobile number</Text>
                 <TextInput value={agentRegisterForm.mobileNumber} onChangeText={(value) => setAgentRegisterForm((current) => ({ ...current, mobileNumber: value }))} placeholder="+63 917 123 4567" placeholderTextColor="#94a3b8" keyboardType="phone-pad" style={styles.input} />
+                <Text style={styles.label}>Organization / group</Text>
+                <TextInput value={agentRegisterForm.organizationName} onChangeText={(value) => setAgentRegisterForm((current) => ({ ...current, organizationName: value }))} placeholder="e.g. John's Talyer or Maritoda" placeholderTextColor="#94a3b8" style={styles.input} />
                 <Text style={styles.label}>Service category</Text>
                 <View style={styles.rowWrap}>
                   {["mechanic", "vulcanizing", "towing"].map((category) => (
-                    <Chip key={category} label={category} active={agentRegisterForm.serviceCategory === category} onPress={() => setAgentRegisterForm((current) => ({ ...current, serviceCategory: category }))} />
+                    <Chip
+                      key={category}
+                      label={category}
+                      active={agentRegisterForm.serviceCategories.includes(category)}
+                      onPress={() =>
+                        setAgentRegisterForm((current) => ({
+                          ...current,
+                          serviceCategories: current.serviceCategories.includes(category)
+                            ? current.serviceCategories.filter((item) => item !== category)
+                            : [...current.serviceCategories, category],
+                        }))
+                      }
+                    />
                   ))}
                 </View>
                 <Text style={styles.label}>Service area coverage</Text>
@@ -1141,6 +2300,17 @@ export default function App() {
                 <TextInput value={agentRegisterForm.username} onChangeText={(value) => setAgentRegisterForm((current) => ({ ...current, username: value }))} placeholder="Choose a username" placeholderTextColor="#94a3b8" autoCapitalize="none" style={styles.input} />
                 <Text style={styles.label}>Password</Text>
                 <TextInput value={agentRegisterForm.password} onChangeText={(value) => setAgentRegisterForm((current) => ({ ...current, password: value }))} placeholder="Create password" placeholderTextColor="#94a3b8" secureTextEntry style={styles.input} />
+                <Pressable
+                  style={[styles.option, agentRegisterForm.liabilityAcknowledged && styles.optionActive]}
+                  onPress={() => setAgentRegisterForm((current) => ({ ...current, liabilityAcknowledged: !current.liabilityAcknowledged }))}
+                >
+                  <Text style={styles.optionTitle}>
+                    {agentRegisterForm.liabilityAcknowledged ? "Liability declaration acknowledged" : "Acknowledge liability declaration"}
+                  </Text>
+                  <Text style={styles.text}>
+                    I confirm that if I upload an old or false GCash balance proof, the organization or group I belong to may be held liable by KalsadaKonek.
+                  </Text>
+                </Pressable>
                 {agentRegisterError ? <Text style={styles.error}>{agentRegisterError}</Text> : null}
                 <Pressable style={styles.primary} onPress={continueAgentRegisterInfo}>
                   <Text style={styles.primaryText}>Continue to credential upload</Text>
@@ -1158,7 +2328,9 @@ export default function App() {
                 ].map(([key, label]) => (
                   <View key={key} style={styles.list}>
                     <Text style={styles.listTitle}>{label}</Text>
-                    <Text style={styles.text}>{credentialFiles[key as keyof CredentialFiles] ?? "No file selected yet"}</Text>
+                    <Text style={styles.text}>
+                      {credentialFiles[key as keyof CredentialFiles]?.name ?? "No file selected yet"}
+                    </Text>
                     <Pressable style={styles.secondary} onPress={() => pickCredentialFile(key as keyof CredentialFiles)}>
                       <Text style={styles.secondaryText}>Upload file</Text>
                     </Pressable>
@@ -1180,10 +2352,193 @@ export default function App() {
         {screen === "user-app" && (
           <>
             <TopCard title={`Hello, ${userName}`} subtitle="Roadside help, maps, and live dispatch updates" onExit={() => setScreen("role")} />
-            <Tabs active={userTab} setActive={setUserTab} labels={{ explore: "Explore", emergency: "Emergency", tracking: "Tracking" }} />
+            <Tabs active={userTab} setActive={setUserTab} labels={{ subscription: "Subscription", explore: "Explore", emergency: "Emergency", tracking: "Tracking", forum: "Forum" }} />
+
+            {userTab === "subscription" && (
+            <ExpandableCard
+              title="Motorist Subscription"
+              subtitle={
+                motoristSubscriptionStatus === "active"
+                  ? `Subscription active on the ${formatSubscriptionPlanLabel(motoristSubscriptionPlan)} offer. Photo upload and priority support are unlocked. Responder coverage radius: ${motoristAgentSearchRadiusKm} km based on your current subscription tier.`
+                  : `Free plan active. Choose Monthly, 6 Months, or Annual to unlock image upload and priority support. Responder coverage radius: ${motoristAgentSearchRadiusKm} km on the free plan. Paid plans unlock wider responder search coverage.`
+              }
+              expanded={Boolean(expandedSections.motoristSubscription)}
+              onToggle={() => toggleSection("motoristSubscription")}
+              summaryRight={
+                <Pill
+                  label={
+                    motoristSubscriptionStatus === "active"
+                      ? formatSubscriptionPlanLabel(motoristSubscriptionPlan)
+                      : "Free"
+                  }
+                  active={motoristSubscriptionStatus === "active"}
+                />
+              }
+            >
+              <View style={styles.subscriptionOverviewGrid}>
+                <View style={styles.subscriptionOverviewCard}>
+                  <Text style={styles.subscriptionOverviewLabel}>Current plan</Text>
+                  <Text style={styles.subscriptionOverviewValue}>
+                    {motoristSubscriptionStatus === "active"
+                      ? formatSubscriptionPlanLabel(motoristSubscriptionPlan)
+                      : "Free"}
+                  </Text>
+                  <Text style={styles.text}>Responder reach: {motoristAgentSearchRadiusKm} km</Text>
+                </View>
+                <View style={styles.subscriptionOverviewCard}>
+                  <Text style={styles.subscriptionOverviewLabel}>Access level</Text>
+                  <Text style={styles.subscriptionOverviewValue}>
+                    {motoristSubscriptionStatus === "active" ? "Premium" : "Basic"}
+                  </Text>
+                  <Text style={styles.text}>
+                    {motoristSubscriptionStatus === "active"
+                      ? "Priority assistance and photo upload are enabled."
+                      : "Upgrade for wider search coverage and richer triage tools."}
+                  </Text>
+                </View>
+              </View>
+              {motoristSubscriptionStatus !== "active" ? (
+                <View style={styles.subscriptionCard}>
+                  <View style={styles.rowWrap}>
+                    {subscriptionOffers.map((offer) => (
+                      <Chip
+                        key={offer.value}
+                        label={`${offer.label} • ${offer.price}`}
+                        active={selectedSubscriptionOffer === offer.value}
+                        onPress={() => setSelectedSubscriptionOffer(offer.value)}
+                      />
+                    ))}
+                  </View>
+                  <View style={styles.subscriptionPlansStack}>
+                    {subscriptionOffers.map((offer) => (
+                      <Pressable
+                        key={`${offer.value}-details`}
+                        style={[styles.subscriptionPlanCard, selectedSubscriptionOffer === offer.value && styles.subscriptionPlanCardActive]}
+                        onPress={() => setSelectedSubscriptionOffer(offer.value)}
+                      >
+                        <View style={styles.between}>
+                          <View style={styles.flex}>
+                            <Text style={styles.subscriptionPlanTitle}>{offer.label}</Text>
+                            <Text style={styles.subscriptionPlanTagline}>{offer.tagline}</Text>
+                          </View>
+                          <View style={styles.subscriptionPlanPriceWrap}>
+                            <Text style={styles.subscriptionPlanPrice}>{offer.price}</Text>
+                            <Text style={styles.subscriptionPlanPriceMeta}>per plan</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.text}>{offer.description}</Text>
+                        <View style={styles.rowWrap}>
+                          <Pill label={`${offer.coverageKm} km coverage`} active={selectedSubscriptionOffer === offer.value} />
+                          <Pill label="Photo upload" />
+                          <Pill label="Priority support" />
+                        </View>
+                        <View style={styles.subscriptionFeatureList}>
+                          {offer.features.map((feature) => (
+                            <View key={feature} style={styles.subscriptionFeatureItem}>
+                              <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                              <Text style={styles.text}>{feature}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </Pressable>
+                    ))}
+                  </View>
+                  <Image
+                    source={{
+                      uri: `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(`KalsadaKonek Motorist Subscription - ${selectedSubscriptionOffer}`)}`,
+                    }}
+                    style={styles.subscriptionQr}
+                  />
+                  <View style={styles.flex}>
+                    <Text style={styles.label}>
+                      {subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer)?.label} plan
+                    </Text>
+                    <Text style={styles.text}>
+                      {subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer)?.description}
+                    </Text>
+                    <Text style={styles.text}>
+                      Pay via QR and wait for admin activation after manual payment verification.
+                    </Text>
+                    <Text style={styles.label}>Reference note</Text>
+                    <TextInput
+                      value={subscriptionReferenceNote}
+                      onChangeText={setSubscriptionReferenceNote}
+                      placeholder="Optional GCash name, time sent, or reference number"
+                      placeholderTextColor="#94a3b8"
+                      style={styles.input}
+                    />
+                    <Pressable
+                      style={[styles.primary, subscriptionPaymentSubmitting && styles.buttonDisabled]}
+                      onPress={() => void submitSubscriptionPayment()}
+                      disabled={subscriptionPaymentSubmitting}
+                    >
+                      <Text style={styles.primaryText}>
+                        {subscriptionPaymentSubmitting ? "Sending..." : "I paid this plan"}
+                      </Text>
+                    </Pressable>
+                    {latestSubscriptionPayment ? (
+                      <View style={styles.subscriptionStatusCard}>
+                        <Text style={styles.label}>Latest payment notice</Text>
+                        <Text style={styles.text}>
+                          {formatSubscriptionPlanLabel(latestSubscriptionPayment.subscriptionPlan)} - PHP {latestSubscriptionPayment.amount}
+                        </Text>
+                        <Text style={styles.text}>
+                          Status: {latestSubscriptionPayment.status}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.subscriptionCard}>
+                  <Text style={styles.label}>Active plan</Text>
+                  <Text style={styles.valueBig}>{formatSubscriptionPlanLabel(motoristSubscriptionPlan)}</Text>
+                  <Text style={styles.text}>
+                    Expiry: {motoristSubscriptionExpiresAt ? formatForumTimestamp(motoristSubscriptionExpiresAt) : "Not available"}
+                  </Text>
+                  <View style={styles.subscriptionFeatureList}>
+                    <View style={styles.subscriptionFeatureItem}>
+                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                      <Text style={styles.text}>Responder search coverage up to {motoristAgentSearchRadiusKm} km</Text>
+                    </View>
+                    <View style={styles.subscriptionFeatureItem}>
+                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                      <Text style={styles.text}>Photo upload available during symptom triage</Text>
+                    </View>
+                    <View style={styles.subscriptionFeatureItem}>
+                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                      <Text style={styles.text}>Priority support routing remains enabled while active</Text>
+                    </View>
+                  </View>
+                </View>
+              )}
+            </ExpandableCard>
+            )}
 
             {userTab === "explore" && (
               <>
+                <ExpandableCard
+                  title="Booking history"
+                  subtitle="Open completed requests and submitted feedback only when you need to review them."
+                  expanded={Boolean(expandedSections.motoristHistory)}
+                  onToggle={() => toggleSection("motoristHistory")}
+                >
+                  {motoristHistory.length ? motoristHistory.slice(0, 3).map((item) => (
+                    <View key={item.id} style={styles.list}>
+                      <Text style={styles.listTitle}>{item.serviceLabel}</Text>
+                      <Text style={styles.text}>{item.counterpartName}</Text>
+                      <Text style={styles.text}>
+                        Your feedback: {item.viewerFeedback?.overallRating ?? 0}/5
+                        {item.counterpartFeedback ? ` | Responder feedback: ${item.counterpartFeedback.overallRating}/5` : ""}
+                      </Text>
+                      <Text style={styles.text}>
+                        {item.completedAt ? formatForumTimestamp(item.completedAt) : "Completed job"}
+                      </Text>
+                    </View>
+                  )) : (
+                    <Text style={styles.text}>Completed bookings with submitted feedback will appear here.</Text>
+                  )}
+                </ExpandableCard>
                 <MapCard title="Nearby repair shops" subtitle={`${filteredShops.length} shops near your location`} center={userLocation}>
                   <Marker coordinate={userLocation} title="You" pinColor="#fb923c" />
                   {filteredShops.map((shop) => <Marker key={shop.id} coordinate={shop.coord} title={shop.name} description={shop.address} pinColor={shop.id === selectedShop?.id ? "#fb923c" : "#38bdf8"} onPress={() => setSelectedShopId(shop.id)} />)}
@@ -1262,38 +2617,47 @@ export default function App() {
             )}
 
             {userTab === "tracking" && (
-              <>
-                <View style={styles.inlineBack}>
-                  <Pressable style={styles.secondary} onPress={() => setUserTab("emergency")}><Text style={styles.secondaryText}>Back to emergency</Text></Pressable>
-                </View>
-                <View style={styles.alert}>
-                  <Text style={styles.alertTitle}>{trackingStatus.replace("-", " ")}</Text>
-                  <Text style={styles.alertText}>Stay on this screen to keep watching the responder trip and service state.</Text>
-                </View>
-                <MapCard title="Live rescue map" subtitle="Track your responder in real time" center={userLocation} route={route} showRoute={true}>
-                  <Marker coordinate={userLocation} title="Your location" pinColor="#fb923c" />
-                  <Marker coordinate={agentLocation} title="Responder" pinColor="#22c55e" />
-                </MapCard>
-                <View style={styles.double}>
-                  <Mini title="Elapsed time" value={clock(elapsed)} />
-                  <Mini title="SLA timer" value={clock(sla)} accent={sla < 60 ? "#f87171" : "#4ade80"} />
-                </View>
+              liveDispatchId ? (
+                <MotorietTrackingScreen
+                  dispatchId={liveDispatchId}
+                  motoristLocation={userLocation}
+                  motoristName={userName}
+                  motoristUserId={userId}
+                />
+              ) : (
                 <View style={styles.card}>
-                  <Text style={styles.title}>Responder details</Text>
-                  <Text style={styles.text}>{liveDispatchDetails?.agent?.fullName ?? matchedAgent?.name ?? "Awaiting responder assignment"}</Text>
+                  <Text style={styles.title}>Tracking your request</Text>
                   <Text style={styles.text}>
-                    {liveDispatchDetails ? `${liveDispatchDetails.motorist.issueSummary} - ${liveDispatchDetails.motorist.phone}` : "Vehicle ABC 1234 - ETA 5 minutes"}
+                    We have saved your rescue request locally and are waiting for the live dispatch record to become available.
                   </Text>
-                  {liveDispatchDetails ? (
-                    <Text style={styles.text}>
-                      Request {liveDispatchDetails.id} - {liveDispatchDetails.motorist.locationLabel}
-                    </Text>
-                  ) : null}
-                  <View style={styles.rowWrap}>
-                    {["matched", "accepted", "en-route", "arrived", "in-service", "completed"].map((stage) => <Pill key={stage} label={stage} active={["matched", "accepted", "en-route", "arrived", "in-service", "completed"].indexOf(stage) <= ["matched", "accepted", "en-route", "arrived", "in-service", "completed"].indexOf(trackingStatus)} />)}
-                  </View>
+                  <Text style={styles.text}>
+                    {backendMessage || "A responder can still receive your request once the backend sync finishes."}
+                  </Text>
                 </View>
-              </>
+              )
+            )}
+
+            {userTab === "forum" && (
+              <ForumPanel
+                role="motorist"
+                threads={forumThreads}
+                loading={forumLoading}
+                error={forumError}
+                title={forumTitle}
+                body={forumBody}
+                topic={forumTopic}
+                posting={forumPosting}
+                replyDrafts={forumReplyDrafts}
+                replyingId={forumReplyingId}
+                onTitleChange={setForumTitle}
+                onBodyChange={setForumBody}
+                onTopicChange={setForumTopic}
+                onSubmitPost={() => void submitForumPost()}
+                onReplyDraftChange={(threadId, value) =>
+                  setForumReplyDrafts((current) => ({ ...current, [threadId]: value }))
+                }
+                onSubmitReply={(threadId) => void submitForumReply(threadId)}
+              />
             )}
           </>
         )}
@@ -1322,79 +2686,96 @@ export default function App() {
             <View style={styles.between}>
               <View style={styles.flex}>
                 <Text style={styles.label}>Photo attachments</Text>
-                <Text style={styles.text}>{triagePhotos.length > 0 ? `${triagePhotos.length} photo(s) selected` : "Optional photos help responders diagnose faster."}</Text>
+                <Text style={styles.text}>
+                  {motoristSubscriptionStatus === "active"
+                    ? (triagePhotos.length > 0 ? `${triagePhotos.length} photo(s) selected` : "Optional photos help responders diagnose faster.")
+                    : "Locked for free users. Subscribe to unlock photo upload."}
+                </Text>
               </View>
-              <Pressable style={styles.secondary} onPress={pickTriagePhoto}>
-                <Text style={styles.secondaryText}>Add photos</Text>
-              </Pressable>
+              {motoristSubscriptionStatus === "active" ? (
+                <Pressable style={styles.secondary} onPress={pickTriagePhoto}>
+                  <Text style={styles.secondaryText}>Add photos</Text>
+                </Pressable>
+              ) : (
+                <View style={styles.lockedPill}>
+                  <Text style={styles.lockedPillText}>Locked</Text>
+                </View>
+              )}
             </View>
             <View style={styles.alert}>
               <Text style={styles.alertTitle}>Symptom classification</Text>
               <Text style={styles.alertText}>Your selected symptoms will be used to match you with the most appropriate rescue responder.</Text>
             </View>
-            <Pressable style={styles.primary} onPress={continueFromTriage}><Text style={styles.primaryText}>Find rescue agent</Text></Pressable>
+            <Pressable style={styles.primary} onPress={continueFromTriage}><Text style={styles.primaryText}>Find rescue responder</Text></Pressable>
           </View>
         )}
 
         {screen === "user-finding-agent" && (
           <View style={styles.card}>
             <View style={styles.between}>
-              <Pressable style={styles.secondary} onPress={() => setScreen("user-triage")}><Text style={styles.secondaryText}>Back</Text></Pressable>
-              <Pill label="Agent matching" active />
+              <Pressable
+                style={styles.secondary}
+                onPress={() => {
+                  setScreen("user-triage");
+                }}
+              >
+                <Text style={styles.secondaryText}>Back</Text>
+              </Pressable>
+              <Pill label="Responder match" active />
             </View>
+            <Text style={styles.title}>Find Rescue Responder</Text>
+            <Text style={styles.text}>
+              {findingAgent
+                ? "Searching for the nearest approved responder in your area."
+                : "Review the matched responder and send your rescue request."}
+            </Text>
             {findingAgent ? (
-              <>
-                <Text style={styles.title}>Finding Nearest Agent...</Text>
-                <Text style={styles.text}>Searching for available rescue agents in your area using proximity-based matching.</Text>
-                <View style={styles.loadingRing}>
-                  <Text style={styles.loadingPin}>+</Text>
-                </View>
-                <View style={styles.progressTrack}>
-                  <View style={styles.progressFill} />
-                </View>
-                <Text style={styles.text}>Using proximity-based matching engine...</Text>
-              </>
+              <View style={styles.list}>
+                <Text style={styles.listTitle}>Matching in progress</Text>
+                <Text style={styles.text}>We are checking nearby available responders.</Text>
+              </View>
             ) : matchedAgent ? (
               <>
-                <Text style={styles.title}>Agent Found!</Text>
-                <Text style={styles.text}>We've matched you with a nearby rescue agent.</Text>
-                <View style={styles.card}>
+                <View style={styles.cardMuted}>
                   <Text style={styles.title}>{matchedAgent.name}</Text>
-                  <Text style={styles.text}>{SERVICE_CATEGORY_LABELS[matchedAgent.category]} specialist</Text>
+                  <Text style={styles.text}>{SERVICE_CATEGORY_LABELS[matchedAgent.category]}</Text>
                   <View style={styles.rowWrap}>
-                    <Pill label={`${matchedAgent.rating} rating`} active />
-                    <Pill label={`${matchedAgent.distanceKm} km`} />
-                    <Pill label="ETA 8 minutes" />
+                    <Pill label={`${matchedAgent.distanceKm.toFixed(1)} km away`} />
+                    <Pill label={`${matchedAgent.rating.toFixed(1)} rating`} />
                   </View>
                   <View style={styles.rowWrap}>
-                    {matchedAgent.services.map((service) => <Info key={service} label={service} />)}
-                  </View>
-                  <View style={styles.alert}>
-                    <Text style={styles.alertTitle}>Estimated service fee</Text>
-                    <Text style={styles.alertText}>PHP 350 - PHP 500. Standardized pricing helps prevent overcharging.</Text>
+                    {matchedAgent.services.map((service) => (
+                      <Info key={service} label={service} />
+                    ))}
                   </View>
                 </View>
-                <View style={styles.actions}>
-                  <Pressable style={styles.ghost} onPress={findAnotherAgent}>
-                    <Text style={styles.ghostText}>Find another</Text>
-                  </Pressable>
-                  <Pressable style={styles.action} onPress={requestRescue}>
-                    <Text style={styles.actionText}>Request rescue</Text>
-                  </Pressable>
-                </View>
+                <Pressable
+                  style={[styles.primary, requestSubmitting && styles.buttonDisabled]}
+                  onPress={requestRescue}
+                  disabled={requestSubmitting}
+                >
+                  <Text style={styles.primaryText}>
+                    {requestSubmitting ? "Sending request..." : "Send rescue request"}
+                  </Text>
+                </Pressable>
+                <Pressable style={styles.secondary} onPress={findAnotherAgent}>
+                  <Text style={styles.secondaryText}>Find another responder</Text>
+                </Pressable>
               </>
-            ) : agentSearchError ? (
+            ) : (
               <>
-                <Text style={styles.title}>No Agent Available</Text>
-                <Text style={styles.text}>{agentSearchError}</Text>
+                <Text style={styles.error}>{agentSearchError || "No matching responder is available yet."}</Text>
+                <Pressable style={styles.secondary} onPress={continueFromTriage}>
+                  <Text style={styles.secondaryText}>Retry search</Text>
+                </Pressable>
               </>
-            ) : null}
+            )}
           </View>
         )}
 
         {screen === "agent-app" && (
           <>
-            <TopCard title={`Agent Hub - ${agentName}`} subtitle="Requests, navigation, and performance" onExit={() => setScreen("role")} />
+            <TopCard title={`Responder Hub - ${agentName}`} subtitle="Requests, navigation, and performance" onExit={() => setScreen("role")} />
             <View style={styles.card}>
               <View style={styles.between}>
                 <View style={styles.flex}>
@@ -1404,13 +2785,13 @@ export default function App() {
                 <Switch value={availability} onValueChange={setAvailability} trackColor={{ false: "#475569", true: "#fb923c" }} />
               </View>
             </View>
-            <Tabs active={agentTab} setActive={setAgentTab} labels={{ requests: "Requests", navigation: "Navigation", stats: "Stats" }} />
+            <Tabs active={agentTab} setActive={setAgentTab} labels={{ requests: "Requests", navigation: "Navigation", stats: "Stats", profile: "Profile", forum: "Forum" }} />
 
             {agentTab === "requests" && (
               <>
                 <View style={styles.double}>
-                  <Mini title="Today jobs" value={`${agentDispatches.length}`} />
-                  <Mini title="Today earnings" value={agentDispatches.length > 0 ? `PHP ${agentDispatches.length * 350}` : "PHP 0"} accent="#fb923c" />
+                  <Mini title="Open jobs" value={`${openAgentDispatches.length}`} />
+                  <Mini title="Open earnings" value="PHP 0" accent="#fb923c" />
                 </View>
                 {agentId ? (
                   <>
@@ -1432,71 +2813,53 @@ export default function App() {
                 ) : null}
                 {!availability ? (
                   <Empty title="You are offline" subtitle="Enable availability to receive nearby rescue requests." />
-                ) : pendingAgentDispatches.length === 0 ? (
-                  activeAgentRequest ? (
-                    <View style={styles.card}>
-                      <Text style={styles.title}>Ongoing Assignment</Text>
-                      <Text style={styles.text}>You have an active rescue request already in progress. Continue in Navigation to finish the job.</Text>
-                      <Pressable style={styles.action} onPress={() => setAgentTab("navigation")}>
-                        <Text style={styles.actionText}>Go to Navigation</Text>
-                      </Pressable>
-                    </View>
-                  ) : (
-                    <Empty title="No active requests" subtitle="New motorist requests will appear here." />
-                  )
                 ) : (
-                  pendingAgentDispatches.map((dispatch) => (
-                    <View key={dispatch.id} style={styles.card}>
-                      <View style={styles.between}>
-                        <Text style={styles.title}>{dispatch.motorist.fullName}</Text>
-                        <Pill label={dispatch.dispatchStatus === "pending" ? "New Request" : dispatch.dispatchStatus} active={dispatch.dispatchStatus === "pending"} />
-                      </View>
-                      <Text style={styles.text}>{dispatch.motorist.issueSummary}</Text>
-                      <Text style={styles.text}>Location: {dispatch.motorist.latitude.toFixed(4)}, {dispatch.motorist.longitude.toFixed(4)}</Text>
-                      <View style={styles.actions}>
-                        <Pressable style={styles.ghost} onPress={() => {
-                          Alert.alert(
-                            "Decline Request",
-                            "Are you sure you want to decline this rescue request? This action cannot be undone.",
-                            [
-                              { text: "Cancel", style: "cancel" },
-                              { text: "Decline", style: "destructive", onPress: async () => {
-                                const backendDispatch = agentDispatches.find((d) => d.id === dispatch.id);
-                                if (backendDispatch && agentId) {
-                                  try {
-                                    await declineDispatch(dispatch.id, agentId);
-                                    const refreshedDispatches = await fetchAgentDispatches(agentId);
-                                    setAgentDispatches(refreshedDispatches);
-                                  } catch (error) {
-                                    console.warn("Failed to decline dispatch:", error);
-                                    const message = error instanceof Error ? error.message : "Failed to decline the request. Please try again.";
-                                    if (/Network request failed|Failed to fetch|404|500/.test(message)) {
-                                      setAgentDispatches((current) => current.filter((item) => item.id !== dispatch.id));
-                                      Alert.alert("Offline decline", "The request was removed locally, but the backend could not be reached.");
-                                    } else if (/not assigned to you|already .*Cannot decline/i.test(message)) {
-                                      const refreshedDispatches = await fetchAgentDispatches(agentId);
-                                      setAgentDispatches(refreshedDispatches);
-                                      Alert.alert("Unable to decline", "This request is no longer pending and cannot be declined.");
-                                    } else {
-                                      Alert.alert("Error", message);
-                                    }
-                                  }
-                                } else {
-                                  // Fallback for local dispatches
-                                  setAgentDispatches((current) => current.filter((item) => item.id !== dispatch.id));
+                  pendingAgentDispatches.length > 0 ? (
+                    pendingAgentDispatches.map((dispatch) => (
+                      <View key={dispatch.id} style={styles.list}>
+                        <View style={styles.between}>
+                          <Text style={styles.listTitle}>{dispatch.motorist?.fullName ?? "Motorist"}</Text>
+                          <Text style={styles.value}>{dispatch.dispatchStatus}</Text>
+                        </View>
+                        <Text style={styles.text}>{dispatch.motorist?.issueSummary || "Emergency assistance requested."}</Text>
+                        <Text style={styles.text}>
+                          {dispatch.motorist ? `${dispatch.motorist.latitude.toFixed(4)}, ${dispatch.motorist.longitude.toFixed(4)}` : "Location unavailable"}
+                        </Text>
+                        {dispatch.motorist?.symptoms?.length ? (
+                          <View style={styles.rowWrap}>
+                            {dispatch.motorist.symptoms.map((symptom: string) => (
+                              <Info key={symptom} label={symptom} />
+                            ))}
+                          </View>
+                        ) : null}
+                        <View style={styles.between}>
+                          <Pressable
+                            style={styles.secondary}
+                            onPress={() => {
+                              if (!agentId) return;
+                              void (async () => {
+                                try {
+                                  await declineDispatch(dispatch.id, agentId);
+                                  const refreshedDispatches = await fetchAgentDispatches(agentId);
+                                  setAgentDispatches(refreshedDispatches);
+                                } catch (error) {
+                                  console.warn("Failed to decline dispatch:", error);
+                                  Alert.alert("Decline failed", "Could not decline this dispatch right now.");
                                 }
-                              }},
-                            ]
-                          );
-                        }}>
-                          <Text style={styles.ghostText}>Decline</Text>
-                        </Pressable>
-                        <Pressable style={styles.action} onPress={() => acceptRequest(dispatch.id)}>
-                          <Text style={styles.actionText}>Accept and navigate</Text>
-                        </Pressable>
+                              })();
+                            }}
+                          >
+                            <Text style={styles.secondaryText}>Decline</Text>
+                          </Pressable>
+                          <Pressable style={styles.primary} onPress={() => void acceptRequest(dispatch.id)}>
+                            <Text style={styles.primaryText}>Accept request</Text>
+                          </Pressable>
+                        </View>
                       </View>
-                    </View>
-                  ))
+                    ))
+                  ) : (
+                    <Empty title="No pending requests" subtitle="New dispatches will appear here once a motorist is matched to you." />
+                  )
                 )}
               </>
             )}
@@ -1508,8 +2871,8 @@ export default function App() {
                     <Pressable style={styles.secondary} onPress={() => setAgentTab("requests")}><Text style={styles.secondaryText}>Back to requests</Text></Pressable>
                   </View>
                   <MapCard title="Navigation" subtitle={`${activeAgentRequest.motorist?.fullName || activeAgentRequest.motorist} - Navigate to location`} center={navigationMapCenter} route={route} showRoute={true}>
-                    <Marker coordinate={userLocation} title="Motorist" pinColor="#fb923c" />
-                    <Marker coordinate={agentLocation} title="Agent" pinColor="#22c55e" />
+                    <Marker coordinate={activeMotoristLocation} title="Motorist" pinColor="#fb923c" />
+                    <Marker coordinate={agentLocation} title="Responder" pinColor="#22c55e" />
                   </MapCard>
                   <View style={styles.double}>
                     <Mini title="Distance" value={`${navigationDistance.toFixed(1)} km`} />
@@ -1562,9 +2925,11 @@ export default function App() {
                         if (completedId && agentId) {
                           (async () => {
                             try {
-                              await updateDispatchStatus(completedId, "completed");
+                              await completeDispatch(completedId, parseCurrencyAmount(fee));
                               const refreshedDispatches = await fetchAgentDispatches(agentId);
+                              const refreshedHistory = await fetchDispatchHistory(agentId, "agent");
                               setAgentDispatches(refreshedDispatches);
+                              setAgentHistory(refreshedHistory);
                             } catch (error) {
                               console.warn("Failed to complete job on backend:", error);
                             }
@@ -1582,19 +2947,292 @@ export default function App() {
             {agentTab === "stats" && (
               <>
                 <View style={styles.double}>
-                  <Mini title="Weekly earnings" value="PHP 12,400" accent="#fb923c" />
+                  <Mini title="Completed earnings" value={formatCurrencyAmount(completedAgentEarnings)} accent="#fb923c" />
                   <Mini title="Average rating" value="4.8 / 5" />
                 </View>
                 <View style={styles.card}>
                   <Text style={styles.title}>Recent job history</Text>
-                  {jobHistory.map((item) => (
-                    <View key={item} style={styles.list}>
-                      <Text style={styles.listTitle}>{item}</Text>
-                      <Text style={styles.text}>Completed today</Text>
+                  {agentHistory.length ? agentHistory.slice(0, 4).map((item) => (
+                    <View key={item.id} style={styles.list}>
+                      <Text style={styles.listTitle}>{item.serviceLabel}</Text>
+                      <Text style={styles.text}>{item.counterpartName}</Text>
+                      <Text style={styles.text}>Earned: {formatCurrencyAmount(item.payment?.serviceAmount ?? 0)}</Text>
+                      <Text style={styles.text}>
+                        Your feedback: {item.viewerFeedback?.overallRating ?? 0}/5
+                        {item.counterpartFeedback ? ` | Motorist feedback: ${item.counterpartFeedback.overallRating}/5` : ""}
+                      </Text>
+                      <Text style={styles.text}>
+                        {item.completedAt ? formatForumTimestamp(item.completedAt) : "Completed job"}
+                      </Text>
                     </View>
-                  ))}
+                  )) : (
+                    <Text style={styles.text}>Completed jobs will appear here with the real earned amount.</Text>
+                  )}
                 </View>
               </>
+            )}
+
+            {agentTab === "profile" && (
+              <>
+                <ExpandableCard
+                  title="Responder Profile"
+                  subtitle="Open responder identity and organization details when you need to review them."
+                  expanded={Boolean(expandedSections.agentProfile)}
+                  onToggle={() => toggleSection("agentProfile")}
+                >
+                  <Text style={styles.text}>Motorist payments go directly to KalsadaKonek. Admin will send your service amount to the GCash account below.</Text>
+                  <View style={styles.subscriptionStatusCard}>
+                    <Text style={styles.label}>Responder</Text>
+                    <Text style={styles.text}>{agentPaymentProfile?.fullName || agentName}</Text>
+                    <Text style={styles.text}>Business: {agentPaymentProfile?.businessName || agentName}</Text>
+                    <Text style={styles.text}>Organization: {agentPaymentProfile?.organizationName || "Not set yet"}</Text>
+                    <Text style={styles.text}>Service area: {agentPaymentProfile?.serviceArea || "Not set yet"}</Text>
+                  </View>
+                </ExpandableCard>
+                <ExpandableCard
+                  title="Wallet Readiness Verification"
+                  subtitle="Keep the verification details collapsed until you need to update or review them."
+                  expanded={Boolean(expandedSections.agentWallet)}
+                  onToggle={() => toggleSection("agentWallet")}
+                >
+                  <Text style={styles.text}>Upload your GCash screenshot for admin review. KalsadaKonek stores only the approved readiness tier and expiry, not your displayed wallet balance.</Text>
+                  <View style={styles.subscriptionStatusCard}>
+                    <Text style={styles.label}>Current status</Text>
+                    <Text style={styles.text}>
+                      {agentPaymentProfile?.balanceProof.status === "approved"
+                        ? "Approved"
+                        : agentPaymentProfile?.balanceProof.status === "pending"
+                          ? "Pending admin review"
+                          : agentPaymentProfile?.balanceProof.status === "rejected"
+                            ? "Rejected"
+                            : "No proof submitted"}
+                    </Text>
+                    <Text style={styles.text}>
+                      Readiness tier: {agentPaymentProfile?.balanceProof.tierLabel || "Not verified"}
+                    </Text>
+                    <Text style={styles.text}>
+                      Submitted: {agentPaymentProfile?.balanceProof.submittedAt ? formatForumTimestamp(agentPaymentProfile.balanceProof.submittedAt) : "No submission yet"}
+                    </Text>
+                    <Text style={styles.text}>
+                      Valid until: {agentPaymentProfile?.balanceProof.expiresAt ? formatForumTimestamp(agentPaymentProfile.balanceProof.expiresAt) : "Needs approval"}
+                    </Text>
+                    <Text style={styles.text}>
+                      Approved by: {agentPaymentProfile?.balanceProof.approvedBy || "Awaiting admin review"}
+                    </Text>
+                    {agentPaymentProfile?.balanceProof.rejectionReason ? (
+                      <Text style={styles.text}>Rejection reason: {agentPaymentProfile.balanceProof.rejectionReason}</Text>
+                    ) : null}
+                    <Text style={styles.text}>
+                      Liability note: false or old balance proofs can make {agentPaymentProfile?.organizationName || "your organization"} liable.
+                    </Text>
+                  </View>
+                  <Pressable
+                    style={[styles.primary, agentBalanceProofUploading && styles.buttonDisabled]}
+                    onPress={() => void submitAgentBalanceProof()}
+                    disabled={agentBalanceProofUploading}
+                  >
+                    <Text style={styles.primaryText}>{agentBalanceProofUploading ? "Uploading..." : "Upload GCash readiness proof"}</Text>
+                  </Pressable>
+                </ExpandableCard>
+                <ExpandableCard
+                  title="Payment Details"
+                  subtitle="Expand this section only when you need to update payout information."
+                  expanded={Boolean(expandedSections.agentPayment)}
+                  onToggle={() => toggleSection("agentPayment")}
+                >
+                  <Text style={styles.text}>Provide the GCash account where KalsadaKonek admin should send your exact service earnings after each completed job.</Text>
+                  <Text style={styles.label}>GCash account name</Text>
+                  <TextInput
+                    value={agentGcashName}
+                    onChangeText={setAgentGcashName}
+                    placeholder="Enter GCash account name"
+                    placeholderTextColor="#94a3b8"
+                    style={styles.input}
+                  />
+                  <Text style={styles.label}>GCash number</Text>
+                  <TextInput
+                    value={agentGcashNumber}
+                    onChangeText={setAgentGcashNumber}
+                    placeholder="09xxxxxxxxx"
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="phone-pad"
+                    style={styles.input}
+                  />
+                  <Text style={styles.label}>Payout notes</Text>
+                  <TextInput
+                    value={agentPayoutNotes}
+                    onChangeText={setAgentPayoutNotes}
+                    placeholder="Optional notes for admin payout handling"
+                    placeholderTextColor="#94a3b8"
+                    multiline
+                    style={[styles.input, styles.multiline]}
+                  />
+                  <Pressable
+                    style={[styles.primary, agentPaymentSaving && styles.buttonDisabled]}
+                    onPress={() => void saveAgentPaymentDetails()}
+                    disabled={agentPaymentSaving}
+                  >
+                    <Text style={styles.primaryText}>{agentPaymentSaving ? "Saving..." : "Save payment details"}</Text>
+                  </Pressable>
+                </ExpandableCard>
+              </>
+            )}
+
+            {agentTab === "forum" && (
+              <ForumPanel
+                role="agent"
+                threads={forumThreads}
+                loading={forumLoading}
+                error={forumError}
+                title={forumTitle}
+                body={forumBody}
+                topic={forumTopic}
+                posting={forumPosting}
+                replyDrafts={forumReplyDrafts}
+                replyingId={forumReplyingId}
+                onTitleChange={setForumTitle}
+                onBodyChange={setForumBody}
+                onTopicChange={setForumTopic}
+                onSubmitPost={() => void submitForumPost()}
+                onReplyDraftChange={(threadId, value) =>
+                  setForumReplyDrafts((current) => ({ ...current, [threadId]: value }))
+                }
+                onSubmitReply={(threadId) => void submitForumReply(threadId)}
+              />
+            )}
+          </>
+        )}
+
+        {screen === "community-app" && (
+          <>
+            <TopCard title={`Community Hub - ${communityName}`} subtitle="Coins, reward center, and semi-forum access for local roadside support" onExit={() => setScreen("role")} />
+            <Tabs active={communityTab} setActive={setCommunityTab} labels={{ rewards: "Rewards", forum: "Forum" }} />
+            <View style={styles.double}>
+              <Mini title="Current coins" value={`${communityProfile?.communityCoins ?? 0}`} accent="#f59e0b" />
+              <Mini title="Lifetime coins" value={`${communityProfile?.communityLifetimeCoins ?? 0}`} accent="#38bdf8" />
+            </View>
+            {communityTab === "rewards" && (
+            <>
+            <ExpandableCard
+              title="Reward Center"
+              subtitle="Open reward redemption tools only when you are ready to choose a ticket or submit payout details."
+              expanded={Boolean(expandedSections.communityRewardCenter)}
+              onToggle={() => toggleSection("communityRewardCenter")}
+            >
+              <Text style={styles.text}>
+                Save small coins from community activity, then redeem a cash ticket and submit your GCash details for admin payout.
+              </Text>
+              {communityLoading ? (
+                <Text style={styles.text}>Loading your community rewards...</Text>
+              ) : (
+                <>
+                  <View style={styles.rowWrap}>
+                    {communityRewardOptions.map((option) => (
+                      <Chip
+                        key={option.id}
+                        label={`${option.title} • ${option.coinsRequired}`}
+                        active={communityRewardId === option.id}
+                        onPress={() => setCommunityRewardId(option.id)}
+                      />
+                    ))}
+                  </View>
+                  {communityRewardId ? (
+                    <View style={styles.subscriptionStatusCard}>
+                      <Text style={styles.label}>Selected reward</Text>
+                      <Text style={styles.text}>
+                        {communityRewardOptions.find((option) => option.id === communityRewardId)?.title ?? "Reward ticket"}
+                      </Text>
+                      <Text style={styles.text}>
+                        Cash value: PHP {communityRewardOptions.find((option) => option.id === communityRewardId)?.cashValue ?? 0}
+                      </Text>
+                      <Text style={styles.text}>
+                        Coins needed: {communityRewardOptions.find((option) => option.id === communityRewardId)?.coinsRequired ?? 0}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <Text style={styles.label}>GCash name</Text>
+                  <TextInput
+                    value={communityGcashName}
+                    onChangeText={setCommunityGcashName}
+                    placeholder="Enter GCash account name"
+                    placeholderTextColor="#94a3b8"
+                    style={styles.input}
+                  />
+                  <Text style={styles.label}>GCash number</Text>
+                  <TextInput
+                    value={communityGcashNumber}
+                    onChangeText={setCommunityGcashNumber}
+                    placeholder="09xxxxxxxxx"
+                    placeholderTextColor="#94a3b8"
+                    keyboardType="phone-pad"
+                    style={styles.input}
+                  />
+                  <Pressable
+                    style={[styles.primary, communitySubmitting && styles.buttonDisabled]}
+                    onPress={() => void submitCommunityRedemption()}
+                    disabled={communitySubmitting}
+                  >
+                    <Text style={styles.primaryText}>
+                      {communitySubmitting ? "Submitting..." : "Redeem reward ticket"}
+                    </Text>
+                  </Pressable>
+                </>
+              )}
+            </ExpandableCard>
+            <ExpandableCard
+              title="Recent Reward Tickets"
+              subtitle="Review previous redemptions without keeping the full ticket list always open."
+              expanded={Boolean(expandedSections.communityRecentRewards)}
+              onToggle={() => toggleSection("communityRecentRewards")}
+            >
+              {communityRedemptions.length > 0 ? (
+                communityRedemptions.slice(0, 3).map((item) => (
+                  <View key={item.id} style={styles.list}>
+                    <Text style={styles.listTitle}>{item.rewardTitle}</Text>
+                    <Text style={styles.text}>PHP {item.cashValue} • {item.coinsSpent} coins spent</Text>
+                    <Text style={styles.text}>Status: {item.status}</Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.text}>No reward tickets yet. Keep helping in the forum to earn coins.</Text>
+              )}
+            </ExpandableCard>
+            <ExpandableCard
+              title="How coins work"
+              subtitle="Open the earning and redemption rules when you want to review the program policy."
+              expanded={Boolean(expandedSections.communityCoinRules)}
+              onToggle={() => toggleSection("communityCoinRules")}
+            >
+              <Text style={styles.text}>Daily visit to the forum: +1 coin</Text>
+              <Text style={styles.text}>Creating a new post: +2 coins</Text>
+              <Text style={styles.text}>Posting a reply: +1 coin</Text>
+              <Text style={styles.text}>Maximum total coin earnings: 4 coins per 24 hours</Text>
+              <Text style={styles.text}>Once you reach 4 coins, earning is locked until the 24-hour cooldown ends.</Text>
+              <Text style={styles.text}>Redeeming a reward resets your current coin balance to zero.</Text>
+            </ExpandableCard>
+            </>
+            )}
+            {communityTab === "forum" && (
+            <ForumPanel
+              role="community"
+              threads={forumThreads}
+              loading={forumLoading}
+              error={forumError}
+              title={forumTitle}
+              body={forumBody}
+              topic={forumTopic}
+              posting={forumPosting}
+              replyDrafts={forumReplyDrafts}
+              replyingId={forumReplyingId}
+              onTitleChange={setForumTitle}
+              onBodyChange={setForumBody}
+              onTopicChange={setForumTopic}
+              onSubmitPost={() => void submitForumPost()}
+              onReplyDraftChange={(threadId, value) =>
+                setForumReplyDrafts((current) => ({ ...current, [threadId]: value }))
+              }
+              onSubmitReply={(threadId) => void submitForumReply(threadId)}
+            />
             )}
           </>
         )}
@@ -1618,10 +3256,12 @@ function LoginCard(props: {
   onSubmit: () => void;
 }) {
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, styles.authCard]}>
       <View style={styles.between}>
         <Pressable style={styles.secondary} onPress={props.onBack} disabled={props.loading}><Text style={styles.secondaryText}>Back</Text></Pressable>
-        <Pill label={props.badge} active />
+        <View style={styles.authBadge}>
+          <Text style={styles.authBadgeText}>{props.badge}</Text>
+        </View>
       </View>
       <Text style={styles.title}>{props.title}</Text>
       <Text style={styles.text}>{props.subtitle}</Text>
@@ -1636,15 +3276,56 @@ function LoginCard(props: {
   );
 }
 
-function TopCard(props: { title: string; subtitle: string; onExit: () => void }) {
+function ExpandableCard(props: {
+  title: string;
+  subtitle?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  summaryRight?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <View style={styles.card}>
-      <View style={styles.between}>
+      <Pressable style={styles.expandableHeader} onPress={props.onToggle}>
         <View style={styles.flex}>
           <Text style={styles.title}>{props.title}</Text>
-          <Text style={styles.text}>{props.subtitle}</Text>
+          {props.subtitle ? <Text style={styles.text}>{props.subtitle}</Text> : null}
         </View>
-        <Pressable style={styles.secondary} onPress={props.onExit}><Text style={styles.secondaryText}>Switch role</Text></Pressable>
+        <View style={styles.expandableHeaderRight}>
+          {props.summaryRight}
+          <View style={styles.expandableTogglePill}>
+            <Text style={styles.expandableToggleText}>{props.expanded ? "Hide" : "Show"}</Text>
+          </View>
+        </View>
+      </Pressable>
+      {props.expanded ? <View style={styles.expandableContent}>{props.children}</View> : null}
+    </View>
+  );
+}
+
+function TopCard(props: { title: string; subtitle: string; onExit: () => void }) {
+  return (
+    <View style={styles.topCard}>
+      <View style={styles.topCardGlow} />
+      <View style={styles.topCardHeader}>
+        <View style={styles.topCardBadge}>
+          <Text style={styles.topCardBadgeText}>Active Workspace</Text>
+        </View>
+        <Pressable style={styles.secondary} onPress={props.onExit}><Text style={styles.secondaryText}>Logout</Text></Pressable>
+      </View>
+      <View style={styles.topCardCopy}>
+        <Text style={styles.topCardTitle}>{props.title}</Text>
+        <Text style={styles.topCardSubtitle}>{props.subtitle}</Text>
+      </View>
+      <View style={styles.topCardFooter}>
+        <View style={styles.topCardMetric}>
+          <Text style={styles.topCardMetricLabel}>Status</Text>
+          <Text style={styles.topCardMetricValue}>Live system access</Text>
+        </View>
+        <View style={styles.topCardMetric}>
+          <Text style={styles.topCardMetricLabel}>Experience</Text>
+          <Text style={styles.topCardMetricValue}>Professional mobile workflow</Text>
+        </View>
       </View>
     </View>
   );
@@ -1664,13 +3345,145 @@ function Tabs<T extends string>({ active, setActive, labels }: { active: T; setA
   );
 }
 
+function ForumPanel(props: {
+  role: "motorist" | "agent" | "community";
+  threads: ForumThread[];
+  loading: boolean;
+  error: string;
+  title: string;
+  body: string;
+  topic: ForumTopic;
+  posting: boolean;
+  replyDrafts: ForumReplyDrafts;
+  replyingId: string | null;
+  onTitleChange: (value: string) => void;
+  onBodyChange: (value: string) => void;
+  onTopicChange: (value: ForumTopic) => void;
+  onSubmitPost: () => void;
+  onReplyDraftChange: (threadId: string, value: string) => void;
+  onSubmitReply: (threadId: string) => void;
+}) {
+  const rolePrompt =
+    props.role === "agent"
+      ? "Ask about road access, payment habits, or operational concerns."
+      : props.role === "community"
+        ? "Ask about stranded motorists, responder quality, road passability, or community safety."
+        : "Ask about responders, road conditions, payment concerns, or safety.";
+
+  return (
+    <>
+      <View style={styles.card}>
+        <Text style={styles.title}>Community Forum</Text>
+        <Text style={styles.text}>{rolePrompt}</Text>
+        <View style={styles.rowWrap}>
+          {forumTopics.map((item) => (
+            <Chip
+              key={item.value}
+              label={item.label}
+              active={props.topic === item.value}
+              onPress={() => props.onTopicChange(item.value)}
+            />
+          ))}
+        </View>
+        <Text style={styles.label}>Title</Text>
+        <TextInput
+          value={props.title}
+          onChangeText={props.onTitleChange}
+          placeholder={
+            props.role === "agent"
+              ? "Is this road passable for towing tonight?"
+              : "Is this responder reliable and responsive?"
+          }
+          placeholderTextColor="#94a3b8"
+          style={styles.input}
+        />
+        <Text style={styles.label}>Post details</Text>
+        <TextInput
+          value={props.body}
+          onChangeText={props.onBodyChange}
+          placeholder="Share the concern so motorists and responders can help."
+          placeholderTextColor="#94a3b8"
+          multiline
+          style={[styles.input, styles.multiline]}
+        />
+        {props.error ? <Text style={styles.error}>{props.error}</Text> : null}
+        <Pressable
+          style={[styles.primary, props.posting && styles.buttonDisabled]}
+          onPress={props.onSubmitPost}
+          disabled={props.posting}
+        >
+          <Text style={styles.primaryText}>{props.posting ? "Posting..." : "Post to forum"}</Text>
+        </Pressable>
+      </View>
+
+      {props.loading ? (
+        <View style={styles.card}>
+          <Text style={styles.title}>Loading forum</Text>
+          <Text style={styles.text}>Fetching the latest posts from motorists and responders.</Text>
+        </View>
+      ) : props.threads.length > 0 ? (
+        props.threads.map((thread) => (
+          <View key={thread.id} style={styles.card}>
+            <View style={styles.between}>
+              <View style={styles.flex}>
+                <Text style={styles.title}>{thread.title}</Text>
+                <Text style={styles.text}>
+                  {forumTopicLabels[thread.topic]} - {thread.authorName} ({thread.authorRole}) - {formatForumTimestamp(thread.createdAt)}
+                </Text>
+              </View>
+              <Pill label={`${thread.replyCount} replies`} />
+            </View>
+            <Text style={styles.text}>{thread.body}</Text>
+            {thread.replies.length > 0 ? (
+              thread.replies.map((reply: ForumReply) => (
+                <View key={reply.id} style={styles.forumReply}>
+                  <Text style={styles.forumReplyMeta}>
+                    {reply.authorName} ({reply.authorRole}) - {formatForumTimestamp(reply.createdAt)}
+                  </Text>
+                  <Text style={styles.text}>{reply.body}</Text>
+                </View>
+              ))
+            ) : (
+              <View style={styles.forumReply}>
+                <Text style={styles.text}>No replies yet. Be the first to respond.</Text>
+              </View>
+            )}
+            <TextInput
+              value={props.replyDrafts[thread.id] ?? ""}
+              onChangeText={(value) => props.onReplyDraftChange(thread.id, value)}
+              placeholder="Write a reply"
+              placeholderTextColor="#94a3b8"
+              multiline
+              style={[styles.input, styles.forumReplyInput]}
+            />
+            <Pressable
+              style={[styles.secondary, props.replyingId === thread.id && styles.buttonDisabled]}
+              onPress={() => props.onSubmitReply(thread.id)}
+              disabled={props.replyingId === thread.id}
+            >
+              <Text style={styles.secondaryText}>
+                {props.replyingId === thread.id ? "Sending..." : "Reply"}
+              </Text>
+            </Pressable>
+          </View>
+        ))
+      ) : (
+        <Empty title="No forum posts yet" subtitle="Start the first conversation for motorists and responders." />
+      )}
+    </>
+  );
+}
+
 function MapCard(props: { title: string; subtitle: string; center: Coords; children: React.ReactNode; route?: Array<{ latitude: number; longitude: number }>; showRoute?: boolean }) {
   return (
-    <View style={styles.card}>
+    <View style={[styles.card, styles.mapCardShell]}>
       <View style={styles.between}>
         <View style={styles.flex}>
           <Text style={styles.title}>{props.title}</Text>
           <Text style={styles.text}>{props.subtitle}</Text>
+        </View>
+        <View style={styles.mapBadge}>
+          <Text style={styles.mapBadgeText}>Live map</Text>
         </View>
       </View>
       <View style={styles.map}>
@@ -1691,7 +3504,13 @@ function MapCard(props: { title: string; subtitle: string; center: Coords; child
 }
 
 function Mini(props: { title: string; value: string; accent?: string }) {
-  return <View style={styles.mini}><Text style={styles.label}>{props.title}</Text><Text style={[styles.miniValue, props.accent ? { color: props.accent } : null]}>{props.value}</Text></View>;
+  return (
+    <View style={styles.mini}>
+      <View style={[styles.miniAccent, props.accent ? { backgroundColor: props.accent } : null]} />
+      <Text style={styles.miniLabel}>{props.title}</Text>
+      <Text style={[styles.miniValue, props.accent ? { color: props.accent } : null]}>{props.value}</Text>
+    </View>
+  );
 }
 
 function Pill(props: { label: string; active?: boolean }) {
@@ -1717,72 +3536,172 @@ function clock(value: number) {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#0f172a" },
-  wrap: { padding: 16, gap: 14 },
+  safe: { flex: 1, backgroundColor: "#081120" },
+  wrap: { paddingHorizontal: 16, paddingTop: 12, gap: 18, paddingBottom: 34, backgroundColor: "#081120" },
+  trackingShell: { flex: 1, backgroundColor: "#ffffff" },
+  trackingHeader: { padding: 16, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#ffffff" },
   inlineBack: { marginBottom: -2 },
-  heroBackground: { borderRadius: 28, overflow: "hidden", minHeight: 260, justifyContent: "flex-end", padding: 24, marginBottom: 16, backgroundColor: "#0f172a" },
-  heroBackgroundImage: { opacity: 0.8 },
-  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(15,23,42,0.7)" },
-  heroContent: { position: "relative", gap: 12, maxWidth: "100%" },
+  heroBackground: { borderRadius: 32, overflow: "hidden", minHeight: 410, justifyContent: "flex-end", paddingHorizontal: 22, paddingTop: 22, paddingBottom: 24, marginBottom: 2, backgroundColor: "#0c1728", borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", shadowColor: "#020617", shadowOpacity: 0.42, shadowRadius: 28, shadowOffset: { width: 0, height: 18 }, elevation: 10 },
+  heroBackgroundImage: { opacity: 0.32, transform: [{ scale: 1.08 }] },
+  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4,10,20,0.82)" },
+  heroGlow: { position: "absolute", top: -54, right: -28, height: 214, width: 214, borderRadius: 999, backgroundColor: "rgba(245,158,11,0.18)" },
+  heroGlowSecondary: { position: "absolute", bottom: -42, left: -26, height: 174, width: 174, borderRadius: 999, backgroundColor: "rgba(56,189,248,0.1)" },
+  heroContent: { position: "relative", gap: 18, maxWidth: "100%" },
   hero: { backgroundColor: "#172033", borderRadius: 24, padding: 20, borderWidth: 1, borderColor: "#334155", gap: 8 },
-  eyebrow: { color: "#fb923c", fontSize: 13, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1 },
-  heroTitle: { color: "#f8fafc", fontSize: 28, lineHeight: 34, fontWeight: "800" },
-  heroText: { color: "#cbd5e1", fontSize: 15, lineHeight: 22, maxWidth: "85%" },
-  heroButtons: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 10 },
-  heroPrimary: { backgroundColor: "#fb923c", borderRadius: 14, paddingVertical: 14, paddingHorizontal: 20, minWidth: 140, alignItems: "center" },
-  heroPrimaryText: { color: "#111827", fontSize: 15, fontWeight: "800" },
-  heroSecondary: { borderColor: "#fb923c", borderWidth: 1, borderRadius: 14, paddingVertical: 14, paddingHorizontal: 20, minWidth: 140, alignItems: "center" },
-  heroSecondaryText: { color: "#fb923c", fontSize: 15, fontWeight: "800" },
+  heroTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10 },
+  heroBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", backgroundColor: "rgba(245,158,11,0.12)", paddingHorizontal: 12, paddingVertical: 8 },
+  heroTrustBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)", backgroundColor: "rgba(15,23,42,0.58)", paddingHorizontal: 12, paddingVertical: 8 },
+  heroTrustText: { color: "#dbe7f5", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.85 },
+  eyebrow: { color: "#f59e0b", fontSize: 12, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1.4 },
+  heroCopy: { gap: 10 },
+  heroLead: { color: "#fbbf24", fontSize: 12, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1.8 },
+  heroTitle: { color: "#f8fafc", fontSize: 38, lineHeight: 42, fontWeight: "900", letterSpacing: -1, maxWidth: "96%" },
+  heroText: { color: "#d3deea", fontSize: 15, lineHeight: 24, maxWidth: "96%" },
+  heroHighlights: { flexDirection: "row", gap: 10 },
+  heroHighlightCard: { flex: 1, borderRadius: 20, paddingHorizontal: 14, paddingVertical: 15, borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", backgroundColor: "rgba(255,255,255,0.06)", gap: 5 },
+  heroHighlightValue: { color: "#f8fafc", fontSize: 15, fontWeight: "800" },
+  heroHighlightLabel: { color: "#9fb0c3", fontSize: 12, lineHeight: 17 },
+  heroButtons: { gap: 12, marginTop: 2 },
+  heroButtonRow: { flexDirection: "row", gap: 10 },
+  heroButton: { borderRadius: 18, minHeight: 58, paddingVertical: 15, paddingHorizontal: 18, alignItems: "center", justifyContent: "center", width: "100%" },
+  heroButtonSplit: { flex: 1, width: "auto" },
+  heroPrimary: { backgroundColor: "#f59e0b", shadowColor: "#f59e0b", shadowOpacity: 0.28, shadowRadius: 20, shadowOffset: { width: 0, height: 12 }, elevation: 7 },
+  heroPrimaryText: { color: "#0f172a", fontSize: 16, fontWeight: "900", letterSpacing: 0.2 },
+  heroSecondary: { borderColor: "rgba(245,158,11,0.72)", borderWidth: 1, backgroundColor: "rgba(13,22,38,0.68)" },
+  heroSecondaryText: { color: "#fbbf24", fontSize: 15, fontWeight: "800", textAlign: "center" },
+  heroTertiary: { borderColor: "rgba(148,163,184,0.22)", borderWidth: 1, backgroundColor: "rgba(255,255,255,0.05)" },
+  heroTertiaryText: { color: "#e2e8f0", fontSize: 15, fontWeight: "800", textAlign: "center" },
+  heroMetrics: { flexDirection: "row", gap: 10, marginTop: 2 },
+  heroMetricCard: { flex: 1, borderRadius: 20, borderWidth: 1, borderColor: "rgba(148,163,184,0.18)", backgroundColor: "rgba(7,14,25,0.5)", paddingHorizontal: 14, paddingVertical: 15, gap: 6 },
+  heroMetricLabel: { color: "#8ea1b7", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.9 },
+  heroMetricValue: { color: "#f8fafc", fontSize: 14, fontWeight: "800", lineHeight: 19 },
   backendNote: { color: "#fdba74", fontSize: 12, lineHeight: 18 },
-  card: { backgroundColor: "#172033", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "#334155", gap: 10 },
-  title: { color: "#f8fafc", fontSize: 18, fontWeight: "800" },
-  text: { color: "#94a3b8", fontSize: 13, lineHeight: 19 },
-  label: { color: "#cbd5e1", fontSize: 13, fontWeight: "700" },
+  card: { backgroundColor: "#0d1728", borderRadius: 22, padding: 16, borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", gap: 10, shadowColor: "#020617", shadowOpacity: 0.18, shadowRadius: 18, shadowOffset: { width: 0, height: 10 }, elevation: 4 },
+  authCard: { backgroundColor: "#101b2d" },
+  authBadge: { borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: "rgba(245,158,11,0.25)", backgroundColor: "rgba(245,158,11,0.1)" },
+  authBadgeText: { color: "#fbbf24", fontSize: 12, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.8 },
+  roleCard: { borderRadius: 30, padding: 18, gap: 14, backgroundColor: "#0d1728", borderColor: "rgba(148,163,184,0.16)", shadowColor: "#020617", shadowOpacity: 0.32, shadowRadius: 22, shadowOffset: { width: 0, height: 12 }, elevation: 6 },
+  cardMuted: { backgroundColor: "#091321", borderRadius: 18, padding: 16, borderWidth: 1, borderColor: "rgba(71,85,105,0.85)", gap: 10 },
+  title: { color: "#f8fafc", fontSize: 20, fontWeight: "800", letterSpacing: -0.3 },
+  titleDark: { color: "#0f172a", fontSize: 18, fontWeight: "800" },
+  text: { color: "#a7b6c8", fontSize: 13, lineHeight: 20 },
+  textDark: { color: "#475569", fontSize: 13, lineHeight: 19 },
+  label: { color: "#d6e1ee", fontSize: 13, fontWeight: "700" },
   value: { color: "#fdba74", fontSize: 13, fontWeight: "800" },
   valueBig: { color: "#fb923c", fontSize: 24, fontWeight: "800" },
-  input: { backgroundColor: "#0f172a", borderRadius: 14, borderWidth: 1, borderColor: "#334155", color: "#f8fafc", paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
+  input: { backgroundColor: "#08111f", borderRadius: 16, borderWidth: 1, borderColor: "rgba(71,85,105,0.78)", color: "#f8fafc", paddingHorizontal: 15, paddingVertical: 13, fontSize: 15 },
   multiline: { minHeight: 96, textAlignVertical: "top" },
   error: { color: "#fda4af", fontSize: 12 },
-  primary: { backgroundColor: "#fb923c", borderRadius: 14, paddingVertical: 14, alignItems: "center" },
-  primaryText: { color: "#111827", fontSize: 15, fontWeight: "800" },
+  primary: { backgroundColor: "#f59e0b", borderRadius: 16, paddingVertical: 15, alignItems: "center", shadowColor: "#f59e0b", shadowOpacity: 0.18, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 5 },
+  primaryText: { color: "#0f172a", fontSize: 15, fontWeight: "900", letterSpacing: 0.2 },
   buttonDisabled: { opacity: 0.6 },
-  secondary: { backgroundColor: "#0f172a", borderRadius: 999, borderWidth: 1, borderColor: "#334155", paddingHorizontal: 14, paddingVertical: 10 },
-  secondaryText: { color: "#cbd5e1", fontWeight: "700" },
-  success: { backgroundColor: "#16a34a", borderRadius: 14, paddingVertical: 14, alignItems: "center" },
+  secondary: { backgroundColor: "#0a1423", borderRadius: 999, borderWidth: 1, borderColor: "rgba(71,85,105,0.8)", paddingHorizontal: 14, paddingVertical: 10 },
+  secondaryText: { color: "#d7e2ef", fontWeight: "700" },
+  success: { backgroundColor: "#16a34a", borderRadius: 16, paddingVertical: 15, alignItems: "center" },
   successText: { color: "#f8fafc", fontSize: 15, fontWeight: "800" },
-  option: { backgroundColor: "#0f172a", borderRadius: 16, borderWidth: 1, borderColor: "#334155", padding: 14, gap: 6 },
-  optionActive: { borderColor: "#fb923c", backgroundColor: "#261d18" },
+  option: { backgroundColor: "#0a1423", borderRadius: 16, borderWidth: 1, borderColor: "rgba(71,85,105,0.7)", padding: 14, gap: 6 },
+  optionActive: { borderColor: "#f59e0b", backgroundColor: "#1d1810" },
   optionTitle: { color: "#f8fafc", fontSize: 16, fontWeight: "800" },
+  roleHeader: { gap: 8, marginBottom: 4 },
+  roleSectionBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, borderColor: "rgba(148,163,184,0.18)", backgroundColor: "rgba(255,255,255,0.04)", paddingHorizontal: 11, paddingVertical: 6 },
+  roleSectionBadgeText: { color: "#cbd5e1", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.9 },
+  roleSubtitle: { color: "#94a3b8", fontSize: 13, lineHeight: 20, marginTop: 6 },
+  roleOptionCard: { borderRadius: 24, padding: 16, gap: 14 },
+  roleOptionTop: { flexDirection: "row", alignItems: "flex-start", gap: 14 },
+  roleIconShell: { height: 48, width: 48, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1 },
+  roleIconMotorist: { backgroundColor: "rgba(245,158,11,0.12)", borderColor: "rgba(245,158,11,0.38)" },
+  roleIconAgent: { backgroundColor: "rgba(56,189,248,0.12)", borderColor: "rgba(56,189,248,0.32)" },
+  roleIconCommunity: { backgroundColor: "rgba(34,197,94,0.12)", borderColor: "rgba(34,197,94,0.3)" },
+  roleIconText: { color: "#f8fafc", fontSize: 15, fontWeight: "900" },
+  roleContent: { flex: 1, gap: 4 },
+  roleTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" },
+  roleTagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  roleBadgeRecommended: { borderRadius: 999, backgroundColor: "rgba(245,158,11,0.12)", borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", paddingHorizontal: 10, paddingVertical: 5 },
+  roleBadgeRecommendedText: { color: "#fbbf24", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
+  roleBadgeNeutral: { borderRadius: 999, backgroundColor: "rgba(255,255,255,0.05)", borderWidth: 1, borderColor: "rgba(148,163,184,0.18)", paddingHorizontal: 10, paddingVertical: 5 },
+  roleBadgeNeutralText: { color: "#d0dae7", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.5 },
+  rolePill: { alignSelf: "flex-start", borderRadius: 999, backgroundColor: "rgba(245,158,11,0.12)", borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", paddingHorizontal: 12, paddingVertical: 7 },
+  rolePillMuted: { alignSelf: "flex-start", borderRadius: 999, backgroundColor: "rgba(255,255,255,0.04)", borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", paddingHorizontal: 12, paddingVertical: 7 },
+  rolePillText: { color: "#fbbf24", fontSize: 12, fontWeight: "700" },
+  rolePillTextMuted: { color: "#cbd5e1", fontSize: 12, fontWeight: "700" },
   between: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   flex: { flex: 1 },
-  tabs: { backgroundColor: "#172033", borderRadius: 18, padding: 4, borderWidth: 1, borderColor: "#334155", flexDirection: "row", flexWrap: "wrap", gap: 4 },
-  tab: { flexGrow: 1, minWidth: 92, borderRadius: 14, paddingVertical: 12, alignItems: "center" },
-  tabActive: { backgroundColor: "#fb923c" },
-  tabText: { color: "#94a3b8", fontWeight: "700" },
-  tabTextActive: { color: "#111827" },
-  map: { height: 280, borderRadius: 18, overflow: "hidden", borderWidth: 1, borderColor: "#334155" },
+  expandableHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  expandableHeaderRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+  expandableTogglePill: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(148,163,184,0.22)", backgroundColor: "rgba(255,255,255,0.04)", paddingHorizontal: 11, paddingVertical: 6 },
+  expandableToggleText: { color: "#d6e1ee", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.7 },
+  expandableContent: { gap: 12 },
+  tabs: { backgroundColor: "#0b1423", borderRadius: 20, padding: 6, borderWidth: 1, borderColor: "rgba(71,85,105,0.82)", flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  tab: { flexGrow: 1, minWidth: 92, borderRadius: 14, paddingVertical: 12, alignItems: "center", backgroundColor: "transparent" },
+  tabActive: { backgroundColor: "#f59e0b", shadowColor: "#f59e0b", shadowOpacity: 0.16, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+  tabText: { color: "#8fa4ba", fontWeight: "700" },
+  tabTextActive: { color: "#0f172a" },
+  mapCardShell: { gap: 12 },
+  map: { height: 290, borderRadius: 20, overflow: "hidden", borderWidth: 1, borderColor: "rgba(71,85,105,0.82)" },
+  mapBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(56,189,248,0.24)", backgroundColor: "rgba(56,189,248,0.1)", paddingHorizontal: 11, paddingVertical: 6 },
+  mapBadgeText: { color: "#67e8f9", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.7 },
   rowWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   stack: { gap: 8 },
-  chip: { backgroundColor: "#172033", borderRadius: 999, borderWidth: 1, borderColor: "#475569", paddingHorizontal: 14, paddingVertical: 10 },
-  chipActive: { backgroundColor: "#fb923c", borderColor: "#fb923c" },
-  chipText: { color: "#cbd5e1", fontSize: 13, fontWeight: "700" },
-  chipTextActive: { color: "#111827" },
-  pill: { backgroundColor: "#0f172a", borderRadius: 999, borderWidth: 1, borderColor: "#334155", paddingHorizontal: 10, paddingVertical: 7 },
-  pillActive: { backgroundColor: "#261d18", borderColor: "#fb923c" },
+  chip: { backgroundColor: "#0c1728", borderRadius: 999, borderWidth: 1, borderColor: "rgba(71,85,105,0.9)", paddingHorizontal: 14, paddingVertical: 10 },
+  chipActive: { backgroundColor: "#f59e0b", borderColor: "#f59e0b" },
+  chipText: { color: "#d2dbe7", fontSize: 13, fontWeight: "700" },
+  chipTextActive: { color: "#0f172a" },
+  pill: { backgroundColor: "#091321", borderRadius: 999, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", paddingHorizontal: 10, paddingVertical: 7 },
+  pillActive: { backgroundColor: "#22170b", borderColor: "#f59e0b" },
   pillText: { color: "#cbd5e1", fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
-  pillTextActive: { color: "#fdba74" },
-  info: { backgroundColor: "#0f172a", borderRadius: 14, borderWidth: 1, borderColor: "#334155", paddingHorizontal: 12, paddingVertical: 8 },
-  infoText: { color: "#cbd5e1", fontSize: 12, fontWeight: "600" },
-  list: { backgroundColor: "#0f172a", borderRadius: 16, padding: 14, borderWidth: 1, borderColor: "#334155", gap: 6 },
-  listActive: { borderColor: "#fb923c" },
+  pillTextActive: { color: "#fbbf24" },
+  info: { backgroundColor: "#091321", borderRadius: 14, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", paddingHorizontal: 12, paddingVertical: 8 },
+  infoText: { color: "#d1dbe7", fontSize: 12, fontWeight: "600" },
+  list: { backgroundColor: "#091321", borderRadius: 18, padding: 14, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", gap: 7 },
+  listActive: { borderColor: "#f59e0b", backgroundColor: "#111c2d" },
   listTitle: { color: "#f8fafc", fontSize: 15, fontWeight: "800", flex: 1 },
   double: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  mini: { flex: 1, minWidth: 140, backgroundColor: "#172033", borderRadius: 18, padding: 16, borderWidth: 1, borderColor: "#334155", gap: 8 },
+  mini: { flex: 1, minWidth: 140, backgroundColor: "#0d1728", borderRadius: 20, padding: 16, borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", gap: 8, overflow: "hidden" },
+  miniAccent: { width: 42, height: 4, borderRadius: 999, backgroundColor: "#f59e0b" },
+  miniLabel: { color: "#97aabd", fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
   miniValue: { color: "#f8fafc", fontSize: 22, fontWeight: "800" },
   alert: { backgroundColor: "#261d18", borderRadius: 18, borderWidth: 1, borderColor: "#fb923c", padding: 16, gap: 6 },
   alertTitle: { color: "#fdba74", fontSize: 16, fontWeight: "800", textTransform: "capitalize" },
   alertText: { color: "#fed7aa", fontSize: 13, lineHeight: 19 },
-  empty: { backgroundColor: "#172033", borderRadius: 20, borderWidth: 1, borderColor: "#334155", padding: 28, alignItems: "center", gap: 8 },
+  subscriptionCard: { backgroundColor: "#091321", borderRadius: 20, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 14, gap: 12, alignItems: "center" },
+  subscriptionStatusCard: { backgroundColor: "#0d1728", borderRadius: 18, borderWidth: 1, borderColor: "rgba(71,85,105,0.78)", padding: 12, gap: 6, width: "100%" },
+  subscriptionQr: { width: 180, height: 180, borderRadius: 16, backgroundColor: "#ffffff" },
+  subscriptionOverviewGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  subscriptionOverviewCard: { flex: 1, minWidth: 150, backgroundColor: "#091321", borderRadius: 18, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 14, gap: 6 },
+  subscriptionOverviewLabel: { color: "#8fa4ba", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.85 },
+  subscriptionOverviewValue: { color: "#f8fafc", fontSize: 18, fontWeight: "800" },
+  subscriptionPlansStack: { gap: 12, width: "100%" },
+  subscriptionPlanCard: { backgroundColor: "#0d1728", borderRadius: 20, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 14, gap: 10 },
+  subscriptionPlanCardActive: { borderColor: "#f59e0b", backgroundColor: "#111c2d" },
+  subscriptionPlanTitle: { color: "#f8fafc", fontSize: 20, fontWeight: "800" },
+  subscriptionPlanTagline: { color: "#fbbf24", fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
+  subscriptionPlanPriceWrap: { alignItems: "flex-end", gap: 2 },
+  subscriptionPlanPrice: { color: "#f8fafc", fontSize: 18, fontWeight: "900" },
+  subscriptionPlanPriceMeta: { color: "#8fa4ba", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },
+  subscriptionFeatureList: { gap: 8, width: "100%" },
+  subscriptionFeatureItem: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  subscriptionFeatureBullet: { color: "#f59e0b", fontSize: 14, fontWeight: "900", lineHeight: 20 },
+  subscriptionCardHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12, width: "100%" },
+  subscriptionPriceBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", backgroundColor: "rgba(245,158,11,0.12)", paddingHorizontal: 12, paddingVertical: 7 },
+  subscriptionPriceBadgeText: { color: "#fbbf24", fontSize: 12, fontWeight: "800" },
+  lockedPill: { backgroundColor: "#261d18", borderRadius: 999, borderWidth: 1, borderColor: "#fb923c", paddingHorizontal: 14, paddingVertical: 10 },
+  lockedPillText: { color: "#fdba74", fontWeight: "800" },
+  forumReply: { backgroundColor: "#091321", borderRadius: 16, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 12, gap: 6 },
+  forumReplyMeta: { color: "#cbd5e1", fontSize: 12, fontWeight: "700" },
+  forumReplyInput: { minHeight: 72 },
+  empty: { backgroundColor: "#0d1728", borderRadius: 22, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 28, alignItems: "center", gap: 8 },
+  topCard: { position: "relative", overflow: "hidden", backgroundColor: "#0d1728", borderRadius: 28, padding: 18, borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", gap: 16, shadowColor: "#020617", shadowOpacity: 0.28, shadowRadius: 22, shadowOffset: { width: 0, height: 12 }, elevation: 6 },
+  topCardGlow: { position: "absolute", top: -60, right: -30, width: 200, height: 200, borderRadius: 999, backgroundColor: "rgba(245,158,11,0.12)" },
+  topCardHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  topCardBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", backgroundColor: "rgba(245,158,11,0.1)", paddingHorizontal: 12, paddingVertical: 7 },
+  topCardBadgeText: { color: "#fbbf24", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.9 },
+  topCardCopy: { gap: 8, maxWidth: "96%" },
+  topCardTitle: { color: "#f8fafc", fontSize: 28, lineHeight: 32, fontWeight: "900", letterSpacing: -0.8 },
+  topCardSubtitle: { color: "#b3c1d1", fontSize: 14, lineHeight: 22 },
+  topCardFooter: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  topCardMetric: { flex: 1, minWidth: 150, borderRadius: 18, borderWidth: 1, borderColor: "rgba(148,163,184,0.16)", backgroundColor: "rgba(255,255,255,0.04)", padding: 12, gap: 4 },
+  topCardMetricLabel: { color: "#8da0b6", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.85 },
+  topCardMetricValue: { color: "#f8fafc", fontSize: 14, fontWeight: "800", lineHeight: 18 },
   loadingRing: { width: 88, height: 88, borderRadius: 44, borderWidth: 4, borderColor: "#fb923c55", alignItems: "center", justifyContent: "center", alignSelf: "center", marginVertical: 8 },
   loadingPin: { color: "#fb923c", fontSize: 28, fontWeight: "800" },
   progressTrack: { height: 6, borderRadius: 999, backgroundColor: "#334155", overflow: "hidden" },

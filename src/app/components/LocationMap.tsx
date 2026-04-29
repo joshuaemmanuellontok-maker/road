@@ -276,7 +276,7 @@ export function LocationMap({
             <Marker position={agentLocation} icon={agentLocationIcon}>
               <Popup>
                 <div className="text-sm">
-                  <strong>Agent Location</strong>
+                  <strong>Responder Location</strong>
                   <p className="text-xs text-gray-600 mt-1">On the way to assist you</p>
                 </div>
               </Popup>

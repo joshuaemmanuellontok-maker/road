@@ -13,21 +13,23 @@ try {
   // Try to use service account key file if it exists
   const serviceAccountPath = join(__dirname, '..', 'firebase-service-account.json');
   const serviceAccount = JSON.parse(readFileSync(serviceAccountPath, 'utf8'));
+  const projectId = serviceAccount.project_id;
 
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
+    databaseURL: `https://${projectId}.firebaseio.com`
   });
 } catch (error) {
   // Fallback to environment variables (less secure, for development)
   if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_CLIENT_EMAIL) {
+    const projectId = process.env.FIREBASE_PROJECT_ID;
     firebaseApp = admin.initializeApp({
       credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
+        projectId,
         privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       }),
-      databaseURL: `https://${process.env.FIREBASE_PROJECT_ID}.firebaseio.com`
+      databaseURL: `https://${projectId}.firebaseio.com`
     });
   } else {
     console.error('❌ Firebase configuration missing. Please set up firebase-service-account.json or environment variables.');
@@ -43,12 +45,23 @@ export const collections = {
   users: 'users',
   motoristProfiles: 'motorist_profiles',
   adminProfiles: 'admin_profiles',
-  agentProfiles: 'agent_profiles',
+  agentProfiles: 'responder_profiles',
   repairShops: 'repair_shops',
-  agentApplications: 'agent_applications',
+  agentApplications: 'responder_applications',
   emergencyReports: 'emergency_reports',
   emergencyReportSymptoms: 'emergency_report_symptoms',
-  dispatches: 'dispatches'
+  dispatches: 'dispatches',
+  dispatchFeedback: 'dispatch_feedback',
+  forumThreads: 'forum_threads',
+  forumReplies: 'forum_replies',
+  subscriptionPayments: 'subscription_payments',
+  communityRedemptions: 'community_redemptions',
+};
+
+export const legacyCollections = {
+  agentProfiles: 'agent_profiles',
+  agentApplications: 'agent_applications',
+  agents: 'agents',
 };
 
 // Helper to get server timestamp

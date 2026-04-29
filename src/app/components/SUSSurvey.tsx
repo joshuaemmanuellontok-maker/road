@@ -100,7 +100,7 @@ export function SUSSurvey({ onClose, onSubmit }: SUSSurveyProps) {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h2 className="text-2xl font-bold text-white">System Usability Scale (SUS) Feedback</h2>
-            <p className="text-gray-400 mt-1">Help us improve RoadResQ</p>
+            <p className="text-gray-400 mt-1">Help us improve KalsadaKonek</p>
           </div>
           <button
             onClick={onClose}

@@ -55,15 +55,15 @@ export function AgentLogin() {
               <div className="w-8 h-8 bg-[#ff6b3d] rounded-lg flex items-center justify-center">
                 <Wrench className="w-5 h-5 text-white" />
               </div>
-              <span className="text-xl font-bold text-white">RoadResQ Agent</span>
+              <span className="text-xl font-bold text-white">KalsadaKonek Responder</span>
             </div>
           </div>
         </header>
 
         <main className="flex-1 flex items-center justify-center px-6 py-12">
           <div className="bg-gray-900/70 backdrop-blur-sm border border-white/10 rounded-3xl p-8 md:p-12 w-full max-w-md shadow-2xl">
-            <h1 className="text-3xl font-bold text-white mb-2">Agent Log In</h1>
-            <p className="text-gray-300 mb-8">Access your rescue agent dashboard</p>
+            <h1 className="text-3xl font-bold text-white mb-2">Responder Log In</h1>
+            <p className="text-gray-300 mb-8">Access your rescue responder dashboard</p>
 
             <form onSubmit={handleLogin} className="space-y-6">
               {errorMessage ? (
@@ -73,7 +73,7 @@ export function AgentLogin() {
               ) : null}
               <div>
                 <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
-                  Agent ID or Username
+                  Responder ID or Username
                 </label>
                 <input
                   id="username"
@@ -81,7 +81,7 @@ export function AgentLogin() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
-                  placeholder="Enter agent ID"
+                  placeholder="Enter responder ID"
                   required
                 />
               </div>
@@ -114,14 +114,14 @@ export function AgentLogin() {
               <p className="text-gray-300">
                 Not registered yet?{" "}
                 <Link to="/agent/register" className="text-[#ff6b3d] font-semibold hover:underline">
-                  Apply as Agent
+                  Apply as Responder
                 </Link>
               </p>
             </div>
 
             <div className="mt-8 pt-6 border-t border-white/10">
               <p className="text-sm text-gray-400 text-center">
-                Accredited agents only. Registration requires credential verification.
+                Accredited responders only. Registration requires credential verification.
               </p>
             </div>
           </div>

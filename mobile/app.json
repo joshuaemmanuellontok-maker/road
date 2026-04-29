@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "RoadResQ Mobile",
+    "name": "KalsadaKonek Mobile",
     "slug": "roadresq-mobile",
     "version": "0.0.1",
     "orientation": "portrait",
@@ -8,20 +8,20 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "RoadResQ uses your location to find nearby shops and track rescue responders."
+          "locationWhenInUsePermission": "KalsadaKonek uses your location to find nearby shops and track rescue responders."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "RoadResQ lets you attach vehicle photos to help responders assess your issue.",
-          "cameraPermission": "RoadResQ lets you take vehicle photos to help responders assess your issue."
+          "photosPermission": "KalsadaKonek lets you attach vehicle photos to help responders assess your issue.",
+          "cameraPermission": "KalsadaKonek lets you take vehicle photos to help responders assess your issue."
         }
       ]
     ],
     "ios": {
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "RoadResQ uses your location to find nearby shops and track rescue responders."
+        "NSLocationWhenInUseUsageDescription": "KalsadaKonek uses your location to find nearby shops and track rescue responders."
       }
     },
     "android": {

@@ -2,7 +2,7 @@ import { useState, type ChangeEvent, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Wrench, ArrowLeft, Upload, CheckCircle } from "lucide-react";
 import bgImage from "figma:asset/d571ab94c972a42774418c81ee3ff78236af1305.png";
-import { registerAgentApplication } from "../../api";
+import { registerAgentApplication, type CredentialFilePayload } from "../../api";
 
 export function AgentRegister() {
   const navigate = useNavigate();
@@ -12,7 +12,7 @@ export function AgentRegister() {
   const [formData, setFormData] = useState({
     ownerName: "",
     mobileNumber: "",
-    serviceCategory: "",
+    serviceCategories: [] as string[],
     serviceArea: "",
     username: "",
     password: "",
@@ -24,11 +24,20 @@ export function AgentRegister() {
     nbiClearance: null as File | null,
   });
 
-  const handleChange = (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
     });
+  };
+
+  const toggleServiceCategory = (category: string) => {
+    setFormData((current) => ({
+      ...current,
+      serviceCategories: current.serviceCategories.includes(category)
+        ? current.serviceCategories.filter((item) => item !== category)
+        : [...current.serviceCategories, category],
+    }));
   };
 
   const handleFileUpload = (field: keyof typeof credentials, file: File | null) => {
@@ -41,6 +50,12 @@ export function AgentRegister() {
   const handleSubmitInfo = (e: FormEvent) => {
     e.preventDefault();
     setErrorMessage("");
+
+     if (formData.serviceCategories.length === 0) {
+      setErrorMessage("Select at least one service category.");
+      return;
+    }
+
     setStep("credentials");
   };
 
@@ -51,20 +66,33 @@ export function AgentRegister() {
     setErrorMessage("");
 
     try {
+      const credentialFiles = Object.fromEntries(
+        await Promise.all(
+          Object.entries(credentials).map(async ([key, file]) => [
+            key,
+            file ? await toCredentialPayload(file) : null,
+          ]),
+        ),
+      ) as Record<string, CredentialFilePayload | null>;
+
       await registerAgentApplication({
         ...formData,
+        serviceCategory: formData.serviceCategories[0] ?? "",
         credentialManifest: {
           driversLicense: credentials.driversLicense?.name ?? "",
           vehicleRegistration: credentials.vehicleRegistration?.name ?? "",
           insurance: credentials.insurance?.name ?? "",
           nbiClearance: credentials.nbiClearance?.name ?? "",
         },
+        credentialFiles: Object.fromEntries(
+          Object.entries(credentialFiles).filter(([, value]) => value !== null),
+        ) as Record<string, CredentialFilePayload>,
       });
 
       alert("Application submitted! Admin will review your credentials.");
       navigate("/agent/login");
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Agent registration failed.");
+      setErrorMessage(error instanceof Error ? error.message : "Responder registration failed.");
     } finally {
       setSubmitting(false);
     }
@@ -102,7 +130,7 @@ export function AgentRegister() {
               <div className="w-8 h-8 bg-[#ff6b3d] rounded-lg flex items-center justify-center">
                 <Wrench className="w-5 h-5 text-white" />
               </div>
-              <span className="text-xl font-bold text-white">RoadResQ Agent</span>
+              <span className="text-xl font-bold text-white">KalsadaKonek Responder</span>
             </div>
           </div>
         </header>
@@ -132,7 +160,7 @@ export function AgentRegister() {
 
             {step === "info" ? (
               <>
-                <h1 className="text-3xl font-bold text-white mb-2">Agent Registration</h1>
+                <h1 className="text-3xl font-bold text-white mb-2">Responder Registration</h1>
                 <p className="text-gray-300 mb-8">Step 1: Business Information</p>
 
                 <form onSubmit={handleSubmitInfo} className="space-y-5">
@@ -169,22 +197,35 @@ export function AgentRegister() {
                   </div>
 
                   <div>
-                    <label htmlFor="serviceCategory" className="block text-sm font-medium text-gray-300 mb-2">
-                      Service Category
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Service Categories
                     </label>
-                    <select
-                      id="serviceCategory"
-                      name="serviceCategory"
-                      value={formData.serviceCategory}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
-                      required
-                    >
-                      <option value="">Select category</option>
-                      <option value="mechanic">Mechanic / Talyer</option>
-                      <option value="vulcanizing">Vulcanizing Shop</option>
-                      <option value="towing">Transport Rescue / Towing</option>
-                    </select>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      {[
+                        ["mechanic", "Mechanic / Talyer"],
+                        ["vulcanizing", "Vulcanizing Shop"],
+                        ["towing", "Transport Rescue / Towing"],
+                      ].map(([value, label]) => {
+                        const active = formData.serviceCategories.includes(value);
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => toggleServiceCategory(value)}
+                            className={`rounded-xl border px-4 py-3 text-sm font-medium transition-colors ${
+                              active
+                                ? "border-[#ff6b3d] bg-[#ff6b3d]/20 text-white"
+                                : "border-gray-700 bg-gray-900/50 text-gray-300 hover:border-gray-600"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {formData.serviceCategories.length === 0 ? (
+                      <p className="mt-2 text-xs text-gray-500">Select at least one service.</p>
+                    ) : null}
                   </div>
 
                   <div>
@@ -299,6 +340,31 @@ export function AgentRegister() {
       </div>
     </div>
   );
+}
+
+function toCredentialPayload(file: File): Promise<CredentialFilePayload> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error(`Failed to read ${file.name}.`));
+        return;
+      }
+
+      resolve({
+        name: file.name,
+        type: file.type || "application/octet-stream",
+        dataUrl: reader.result,
+      });
+    };
+
+    reader.onerror = () => {
+      reject(new Error(`Failed to read ${file.name}.`));
+    };
+
+    reader.readAsDataURL(file);
+  });
 }
 
 function CredentialUpload({

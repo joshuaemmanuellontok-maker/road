@@ -50,12 +50,11 @@ export function LogoWithSecret({
             e.stopPropagation();
             handleClick();
           }}
-          className={`${iconContainerClassName} bg-[#ff6b3d] rounded-lg flex items-center justify-center`}
-          style={{ cursor: "pointer" }}
+          className={`${iconContainerClassName} cursor-pointer bg-[#ff6b3d] rounded-lg flex items-center justify-center`}
         >
           <Car className={`${iconClassName} text-white`} />
         </div>
-        {showText && <span className={`${textClassName} text-white`}>RoadResQ</span>}
+        {showText && <span className={`${textClassName} text-white`}>KalsadaKonek</span>}
       </div>
       
       <AdminLoginModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />

@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router";
 import { Shield, ArrowLeft } from "lucide-react";
 import bgImage from "figma:asset/d571ab94c972a42774418c81ee3ff78236af1305.png";
-import { loginAdmin, saveAdminSession, getAdminSession } from "../../api";
+import { loginAdmin, saveAdminSession, clearAdminSession } from "../../api";
 
 export function AdminLogin() {
   const navigate = useNavigate();
@@ -11,12 +11,9 @@ export function AdminLogin() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Redirect if already logged in
   useEffect(() => {
-    if (getAdminSession()) {
-      navigate("/admin/dashboard");
-    }
-  }, [navigate]);
+    clearAdminSession();
+  }, []);
 
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -63,7 +60,7 @@ export function AdminLogin() {
               <div className="w-8 h-8 bg-[#ff6b3d] rounded-lg flex items-center justify-center">
                 <Shield className="w-5 h-5 text-white" />
               </div>
-              <span className="text-xl font-bold text-white">RoadResQ Admin</span>
+              <span className="text-xl font-bold text-white">KalsadaKonek Admin</span>
             </div>
           </div>
         </header>
@@ -75,14 +72,6 @@ export function AdminLogin() {
                 <Shield className="w-8 h-8 text-[#ff6b3d]" />
               </div>
               <h1 className="text-3xl font-bold text-white mb-2">Admin Portal</h1>
-              <p className="text-gray-300">Centralized Administrative Dashboard</p>
-            </div>
-
-            <div className="mb-6 rounded-2xl border border-green-500/30 bg-green-500/10 p-4">
-              <p className="text-sm font-medium text-green-100">✓ Real Authentication</p>
-              <p className="mt-1 text-sm text-green-50/90">
-                Only registered admin accounts can access this portal.
-              </p>
             </div>
 
             {errorMessage && (
@@ -94,7 +83,7 @@ export function AdminLogin() {
             <form onSubmit={handleLogin} className="space-y-6">
               <div>
                 <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
-                  Admin Username
+                  Username
                 </label>
                 <input
                   id="username"
@@ -102,7 +91,7 @@ export function AdminLogin() {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full px-4 py-3 bg-gray-900/50 border border-gray-700 text-white rounded-xl focus:ring-2 focus:ring-[#ff6b3d] focus:border-transparent backdrop-blur-sm"
-                  placeholder="Enter admin username"
+                  placeholder="Enter username"
                   required
                 />
               </div>

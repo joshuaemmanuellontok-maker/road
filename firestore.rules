@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // RESPONDERS COLLECTION - Real-time responder location & status
+    // =========================================================================
+    match /responders/{responderId} {
+      // Responders can read/write their own documents
+      allow read, write: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+
+      // Motorists can read responder data for nearby search
+      allow read: if request.auth != null &&
+        resource.data.status == "online";
+    }
+
+    // Legacy collection retained while old mobile builds finish migrating.
+    match /agents/{agentId} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid == resource.data.userId;
+      allow read: if request.auth != null &&
+        resource.data.status == "online";
+    }
+
+    // =========================================================================
+    // REQUESTS COLLECTION - Real-time rescue requests
+    // =========================================================================
+    match /requests/{requestId} {
+      // Motorists can create requests and read their own
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.motoristId;
+
+      allow read: if request.auth != null &&
+        (request.auth.uid == resource.data.motoristId ||
+         request.auth.uid == resource.data.responderId ||
+         request.auth.uid == resource.data.agentId);
+
+      // Responders can update requests they accepted (status changes)
+      allow update: if request.auth != null &&
+        (request.auth.uid == resource.data.responderId ||
+         request.auth.uid == resource.data.agentId) &&
+        // Only allow status updates
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['status', 'acceptedAt', 'completedAt', 'responderId', 'agentId']);
+    }
+
+    // =========================================================================
+    // EXISTING COLLECTIONS (keep existing rules)
+    // =========================================================================
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /responder_profiles/{responderId} {
+      allow read, write: if request.auth != null && request.auth.uid == responderId;
+    }
+
+    match /agent_profiles/{agentId} {
+      allow read, write: if request.auth != null && request.auth.uid == agentId;
+    }
+
+    match /motorist_profiles/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /responder_applications/{applicationId} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    match /agent_applications/{applicationId} {
+      allow read, write: if request.auth != null && request.auth.uid == resource.data.userId;
+    }
+
+    match /dispatches/{dispatchId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /dispatch_feedback/{feedbackId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update, delete: if false;
+    }
+
+    match /emergency_reports/{reportId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /emergency_report_symptoms/{symptomId} {
+      allow read, write: if request.auth != null;
+    }
+
+    match /repair_shops/{shopId} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

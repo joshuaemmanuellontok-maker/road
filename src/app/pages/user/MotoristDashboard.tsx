@@ -1,10 +1,27 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { MapPin, Phone, LogOut, Car, AlertCircle, Wrench, XCircle, Info, ArrowLeft } from "lucide-react";
+import {
+  MapPin,
+  Phone,
+  LogOut,
+  Car,
+  AlertCircle,
+  Wrench,
+  XCircle,
+  ArrowLeft,
+  Star,
+  MessageSquareText,
+} from "lucide-react";
 import { LogoWithSecret } from "../../components/LogoWithSecret";
 import { LocationMap } from "../../components/LocationMap";
 import { getStoredUserSession, clearStoredUserSession } from "../../session";
-import { fetchAvailableAgents, AvailableAgent, calculateDistance } from "../../api";
+import {
+  fetchAvailableAgents,
+  fetchDispatchHistory,
+  type AvailableAgent,
+  type DispatchHistoryEntry,
+  calculateDistance,
+} from "../../api";
 
 export function MotoristDashboard() {
   const navigate = useNavigate();
@@ -16,6 +33,8 @@ export function MotoristDashboard() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [selectedAgentDetails, setSelectedAgentDetails] = useState<AvailableAgent | null>(null);
+  const [feedbackHistory, setFeedbackHistory] = useState<DispatchHistoryEntry[]>([]);
+  const [feedbackLoading, setFeedbackLoading] = useState(true);
 
   // Check user session
   useEffect(() => {
@@ -44,6 +63,28 @@ export function MotoristDashboard() {
     handleDetectLocation();
   }, []);
 
+  useEffect(() => {
+    const session = getStoredUserSession();
+    if (!session?.id || session.role !== "motorist") {
+      setFeedbackLoading(false);
+      return;
+    }
+
+    const loadFeedbackHistory = async () => {
+      try {
+        setFeedbackLoading(true);
+        const history = await fetchDispatchHistory(session.id, "motorist");
+        setFeedbackHistory(history);
+      } catch (loadError) {
+        console.error("Error fetching feedback history:", loadError);
+      } finally {
+        setFeedbackLoading(false);
+      }
+    };
+
+    loadFeedbackHistory();
+  }, []);
+
   // Fetch real agents from Firebase
   useEffect(() => {
     const loadAgents = async () => {
@@ -54,11 +95,11 @@ export function MotoristDashboard() {
         setAgents(availableAgents);
         
         if (availableAgents.length === 0) {
-          setError("No rescue agents available in your area");
+          setError("No rescue responders available in your area");
         }
       } catch (err) {
-        console.error("Error fetching agents:", err);
-        setError(err instanceof Error ? err.message : "Failed to load rescue agents");
+        console.error("Error fetching responders:", err);
+        setError(err instanceof Error ? err.message : "Failed to load rescue responders");
       } finally {
         setLoading(false);
       }
@@ -98,6 +139,8 @@ export function MotoristDashboard() {
     )
   })).sort((a, b) => a.distance - b.distance);
 
+  const recentFeedback = feedbackHistory.slice(0, 4);
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
@@ -125,7 +168,7 @@ export function MotoristDashboard() {
 
       {/* Quick Action */}
       <div className="bg-gray-800 border-b border-gray-700 px-4 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row gap-3">
+        <div className="max-w-7xl mx-auto flex flex-col lg:flex-row gap-3">
           <button
             onClick={handleRequestOnSpot}
             className="flex-1 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white px-6 py-4 rounded-xl font-semibold transition-colors shadow-lg"
@@ -135,22 +178,101 @@ export function MotoristDashboard() {
           </button>
           <div className="flex-1 flex items-center justify-center gap-2 bg-[#ff6b3d] text-white px-6 py-4 rounded-xl font-semibold shadow-lg opacity-70 cursor-default">
             <Car className="w-5 h-5" />
-            {agents.length} Available Agents
+            {agents.length} Available Responders
           </div>
+          <button
+            onClick={() => navigate("/community/forum")}
+            className="flex-1 flex items-center justify-center gap-2 rounded-xl border border-gray-700 bg-gray-900 px-6 py-4 font-semibold text-white transition-colors hover:border-[#ff6b3d] hover:text-[#ff9a7a]"
+          >
+            <MessageSquareText className="w-5 h-5" />
+            Community Forum
+          </button>
         </div>
       </div>
 
       {/* Main Content */}
       <main className="flex-1 px-4 py-6 max-w-7xl mx-auto w-full">
+        <section className="mb-6 rounded-2xl border border-gray-700 bg-gray-800 p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Feedback History</h2>
+              <p className="mt-1 text-sm text-gray-400">
+                Reviews you submitted and feedback you received from rescue responders.
+              </p>
+            </div>
+            <div className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-300">
+              {feedbackHistory.length} total
+            </div>
+          </div>
+
+          {feedbackLoading ? (
+            <div className="mt-4 rounded-xl border border-blue-500/40 bg-blue-900/20 px-4 py-3 text-sm text-blue-100">
+              Loading feedback history...
+            </div>
+          ) : recentFeedback.length > 0 ? (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              {recentFeedback.map((item) => {
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => navigate(`/feedback/${item.dispatchId}`)}
+                    className="rounded-xl border border-gray-700 bg-gray-900/60 p-4 text-left transition-colors hover:border-[#ff6b3d]/50 hover:bg-gray-900"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-white">
+                          Completed booking
+                        </p>
+                        <p className="mt-1 text-sm text-gray-400">{item.counterpartName}</p>
+                      </div>
+                      <span className="rounded-full bg-[#ff6b3d]/15 px-2 py-1 text-xs font-semibold text-[#ff9a7a]">
+                        {item.viewerFeedback?.overallRating ?? 0}/5
+                      </span>
+                    </div>
+                    <div className="mt-3 flex items-center gap-1">
+                      {Array.from({ length: 5 }, (_, index) => (
+                        <Star
+                          key={`${item.id}-${index}`}
+                          className={`h-4 w-4 ${
+                            index < (item.viewerFeedback?.overallRating ?? 0)
+                              ? "fill-[#ff6b3d] text-[#ff6b3d]"
+                              : "text-gray-600"
+                          }`}
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-3 flex items-start gap-2 text-sm text-gray-300">
+                      <MessageSquareText className="mt-0.5 h-4 w-4 flex-shrink-0 text-gray-500" />
+                      <p className="line-clamp-2">
+                        {item.viewerFeedback?.comment || "No additional notes were included in this review."}
+                      </p>
+                    </div>
+                    <p className="mt-3 text-xs text-gray-400">
+                      {item.serviceLabel} at {item.locationLabel || "Roadside location"}
+                    </p>
+                    <p className="mt-3 text-xs text-gray-500">
+                      Dispatch <span className="font-mono">{item.dispatchId}</span>
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-4 rounded-xl border border-gray-700 bg-gray-900/50 px-4 py-6 text-center">
+              <p className="text-sm text-gray-300">No feedback history yet.</p>
+            </div>
+          )}
+        </section>
+
         {/* Header */}
         <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-white mb-1">
-              Available Rescue Agents
+              Available Rescue Responders
             </h1>
             <p className="text-sm text-gray-400 flex items-center gap-1.5">
               <MapPin className="w-4 h-4" />
-              {agentsWithDistance.length} agents active
+              {agentsWithDistance.length} responders active
             </p>
           </div>
 
@@ -186,7 +308,7 @@ export function MotoristDashboard() {
         {loading && (
           <div className="mb-6 rounded-xl border border-blue-500/50 bg-blue-900/20 px-4 py-3 text-sm text-blue-200 flex items-center gap-2">
             <div className="w-4 h-4 border-2 border-blue-200 border-t-blue-500 rounded-full animate-spin" />
-            Loading rescue agents...
+            Loading rescue responders...
           </div>
         )}
 
@@ -292,9 +414,9 @@ export function MotoristDashboard() {
         ) : (
           <div className="bg-gray-800 rounded-xl border border-gray-700 p-8 text-center">
             <AlertCircle className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-            <h3 className="text-lg font-semibold text-white mb-1">No Agents Available</h3>
+            <h3 className="text-lg font-semibold text-white mb-1">No Responders Available</h3>
             <p className="text-sm text-gray-400 mb-4">
-              No rescue agents are currently active. Request help anyway and we'll connect you.
+              No rescue responders are currently active. Request help anyway and we'll connect you.
             </p>
             <button
               onClick={handleRequestOnSpot}
@@ -355,7 +477,7 @@ export function MotoristDashboard() {
 
                 <div className="bg-green-900/30 rounded-lg p-3 border border-green-500/50">
                   <p className="text-xs text-green-100">
-                    ✓ Verified and approved agent<br/>
+                    ✓ Verified and approved responder<br/>
                     ✓ Real-time location tracking<br/>
                     ✓ Ready to respond immediately
                   </p>
@@ -369,7 +491,7 @@ export function MotoristDashboard() {
                 className="w-full py-4 bg-[#ff6b3d] hover:bg-[#ff5722] text-white font-bold text-lg rounded-xl transition-colors flex items-center justify-center gap-2 shadow-lg"
               >
                 <Phone className="w-5 h-5" />
-                Call Agent Now
+                Call Responder Now
               </a>
             </div>
           </div>

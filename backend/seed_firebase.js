@@ -11,7 +11,7 @@ async function seedFirebaseData() {
         name: 'Mang Pedring Auto Repair',
         owner_name: 'Pedro Cruz',
         contact_number: '0917-123-4567',
-        email: 'mangpedring@roadresq.local',
+        email: 'mangpedring@KalsadaKonek.local',
         address: 'San Pablo City, Laguna',
         latitude: 14.0680000,
         longitude: 121.4180000,
@@ -21,7 +21,7 @@ async function seedFirebaseData() {
         name: 'Bay Vulcanizing Shop',
         owner_name: 'Ramon Diaz',
         contact_number: '0918-234-5678',
-        email: 'bayvulcanizing@roadresq.local',
+        email: 'bayvulcanizing@KalsadaKonek.local',
         address: 'Bay, Laguna',
         latitude: 14.0650000,
         longitude: 121.4200000,
@@ -31,7 +31,7 @@ async function seedFirebaseData() {
         name: 'Calauan Towing Service',
         owner_name: 'Arnel Pineda',
         contact_number: '0919-345-6789',
-        email: 'calauantowing@roadresq.local',
+        email: 'calauantowing@KalsadaKonek.local',
         address: 'Calauan, Laguna',
         latitude: 14.0700000,
         longitude: 121.4150000,
@@ -41,7 +41,7 @@ async function seedFirebaseData() {
         name: 'Los Banos Auto Electric',
         owner_name: 'Efren Reyes',
         contact_number: '0920-456-7890',
-        email: 'losbanos-electric@roadresq.local',
+        email: 'losbanos-electric@KalsadaKonek.local',
         address: 'Los Banos, Laguna',
         latitude: 14.0630000,
         longitude: 121.4220000,
@@ -76,8 +76,8 @@ async function seedFirebaseData() {
     if (adminExists.empty) {
       const adminId = await db.collection(collections.users).add({
         username: 'admin',
-        full_name: 'RoadResQ Administrator',
-        email: 'admin@roadresq.local',
+        full_name: 'KalsadaKonek Administrator',
+        email: 'admin@KalsadaKonek.local',
         password_hash: await bcrypt.hash('admin123', 10),
         phone: null,
         role: 'admin',
@@ -107,7 +107,7 @@ async function seedFirebaseData() {
       const motoristId = await db.collection(collections.users).add({
         username: 'motorist',
         full_name: 'Test Motorist',
-        email: 'motorist@roadresq.local',
+        email: 'motorist@KalsadaKonek.local',
         password_hash: await bcrypt.hash('test123', 10),
         phone: '0917-123-4567',
         role: 'motorist',
@@ -126,8 +126,8 @@ async function seedFirebaseData() {
       console.log('⏭️  Test motorist user already exists');
     }
 
-    // Seed test agent user
-    console.log('👤 Seeding test agent user...');
+    // Seed Test Responder user
+    console.log('👤 Seeding Test Responder user...');
     const agentExists = await db.collection(collections.users)
       .where('username', '==', 'agent')
       .get();
@@ -135,8 +135,8 @@ async function seedFirebaseData() {
     if (agentExists.empty) {
       const agentId = await db.collection(collections.users).add({
         username: 'agent',
-        full_name: 'Test Agent',
-        email: 'agent@roadresq.local',
+        full_name: 'Test Responder',
+        email: 'agent@KalsadaKonek.local',
         password_hash: await bcrypt.hash('test123', 10),
         phone: '0918-234-5678',
         role: 'agent',
@@ -157,9 +157,9 @@ async function seedFirebaseData() {
         created_at: serverTimestamp()
       });
 
-      console.log('✅ Created test agent user: agent / test123');
+      console.log('✅ Created Test Responder user: agent / test123');
     } else {
-      console.log('⏭️  Test agent user already exists');
+      console.log('⏭️  Test Responder user already exists');
     }
 
     console.log('🎉 Firebase seeding complete!');
@@ -167,9 +167,9 @@ async function seedFirebaseData() {
     console.log('📋 Test accounts:');
     console.log('   Admin: admin / admin123');
     console.log('   Motorist: motorist / test123');
-    console.log('   Agent: agent / test123');
+    console.log('   Responder: agent / test123');
     console.log('   Motorist: Register new users via mobile app');
-    console.log('   Agent: Apply via mobile app, approve via admin panel');
+    console.log('   Responder: Apply via mobile app, approve via admin panel');
 
   } catch (error) {
     console.error('❌ Seeding failed:', error.message);

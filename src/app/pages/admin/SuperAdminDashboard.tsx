@@ -15,7 +15,7 @@ const susDetailedData = [
 const processFlowData = [
   { stage: "Emergency Report", avgTime: 45, completionRate: 98 },
   { stage: "Symptom Triage", avgTime: 60, completionRate: 96 },
-  { stage: "Agent Matching", avgTime: 15, completionRate: 94 },
+  { stage: "Responder Matching", avgTime: 15, completionRate: 94 },
   { stage: "Dispatch Accept", avgTime: 30, completionRate: 92 },
   { stage: "En Route", avgTime: 420, completionRate: 98 },
   { stage: "Service Complete", avgTime: 900, completionRate: 95 },
@@ -23,7 +23,7 @@ const processFlowData = [
 
 const userTypeDistribution = [
   { type: "Motorists", active: 1243, registered: 1580 },
-  { type: "Agents", active: 47, registered: 52 },
+  { type: "Responders", active: 47, registered: 52 },
   { type: "Admins", active: 3, registered: 3 },
 ];
 
@@ -41,6 +41,27 @@ const radarData = [
   { metric: "Speed", userScore: 4.7, agentScore: 4.5 },
   { metric: "Satisfaction", userScore: 4.6, agentScore: 4.5 },
 ];
+
+function ChartTooltip({ active, label, payload }: { active?: boolean; label?: string | number; payload?: Array<{ name?: string; value?: string | number; color?: string }> }) {
+  if (!active || !payload || payload.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-indigo-950 px-3 py-2 shadow-lg">
+      {label != null ? <p className="text-sm font-semibold text-white">{String(label)}</p> : null}
+      <div className="mt-2 space-y-1">
+        {payload.map((entry, index) => (
+          <div key={`${entry.name ?? "item"}-${index}`} className="flex items-center gap-2 text-sm text-purple-100">
+            <span className="h-2.5 w-2.5 rounded-full bg-indigo-300" />
+            <span>{entry.name ?? "Value"}:</span>
+            <span className="font-semibold text-white">{String(entry.value ?? "")}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function SuperAdminDashboard() {
   const navigate = useNavigate();
@@ -177,10 +198,7 @@ export function SuperAdminDashboard() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
                   <XAxis dataKey="type" stroke="#ffffff80" />
                   <YAxis stroke="#ffffff80" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1e1b4b", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                    labelStyle={{ color: "#ffffff" }}
-                  />
+                  <Tooltip content={<ChartTooltip />} />
                   <Legend />
                   <Bar dataKey="registered" fill="#818cf8" name="Registered" />
                   <Bar dataKey="active" fill="#34d399" name="Active" />
@@ -196,10 +214,7 @@ export function SuperAdminDashboard() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
                   <XAxis dataKey="week" stroke="#ffffff80" />
                   <YAxis stroke="#ffffff80" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1e1b4b", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                    labelStyle={{ color: "#ffffff" }}
-                  />
+                  <Tooltip content={<ChartTooltip />} />
                   <Legend />
                   <Area key="onTime" type="monotone" dataKey="onTime" stackId="1" stroke="#10b981" fill="#10b981" name="On Time %" />
                   <Area key="breached" type="monotone" dataKey="breached" stackId="1" stroke="#ef4444" fill="#ef4444" name="Breached %" />
@@ -221,10 +236,7 @@ export function SuperAdminDashboard() {
                   <XAxis dataKey="stage" stroke="#ffffff80" angle={-45} textAnchor="end" height={100} />
                   <YAxis yAxisId="left" stroke="#ffffff80" label={{ value: 'Avg Time (sec)', angle: -90, position: 'insideLeft', fill: '#ffffff80' }} />
                   <YAxis yAxisId="right" orientation="right" stroke="#ffffff80" label={{ value: 'Completion %', angle: 90, position: 'insideRight', fill: '#ffffff80' }} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1e1b4b", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                    labelStyle={{ color: "#ffffff" }}
-                  />
+                  <Tooltip content={<ChartTooltip />} />
                   <Legend />
                   <Bar yAxisId="left" dataKey="avgTime" fill="#fbbf24" name="Avg Time (sec)" />
                   <Bar yAxisId="right" dataKey="completionRate" fill="#34d399" name="Completion Rate %" />
@@ -253,12 +265,11 @@ export function SuperAdminDashboard() {
                         {stage.avgTime >= 60 ? `${Math.floor(stage.avgTime / 60)}m ${stage.avgTime % 60}s` : `${stage.avgTime}s`}
                       </p>
                     </div>
-                    <div className="h-2 bg-white/20 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-yellow-400 to-green-400"
-                        style={{ width: `${Math.min(stage.completionRate, 100)}%` }}
-                      ></div>
-                    </div>
+                    <progress
+                      className="h-2 w-full overflow-hidden rounded-full [appearance:none] [&::-moz-progress-bar]:bg-gradient-to-r [&::-moz-progress-bar]:from-yellow-400 [&::-moz-progress-bar]:to-green-400 [&::-webkit-progress-bar]:bg-white/20 [&::-webkit-progress-value]:bg-gradient-to-r [&::-webkit-progress-value]:from-yellow-400 [&::-webkit-progress-value]:to-green-400"
+                      value={Math.min(stage.completionRate, 100)}
+                      max={100}
+                    />
                   </div>
                 </div>
               ))}
@@ -270,17 +281,14 @@ export function SuperAdminDashboard() {
           <div className="space-y-6">
             <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
               <h2 className="text-2xl font-bold text-white mb-2">System Usability Scale (SUS) Detailed Analytics</h2>
-              <p className="text-purple-200 mb-6">Based on 156 motorist and agent survey responses</p>
+              <p className="text-purple-200 mb-6">Based on 156 motorist and responder survey responses</p>
               
               <ResponsiveContainer width="100%" height={400}>
                 <BarChart data={susDetailedData} layout="horizontal">
                   <CartesianGrid strokeDasharray="3 3" stroke="#ffffff20" />
                   <XAxis type="number" domain={[0, 5]} stroke="#ffffff80" />
                   <YAxis dataKey="question" type="category" width={150} stroke="#ffffff80" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1e1b4b", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                    labelStyle={{ color: "#ffffff" }}
-                  />
+                  <Tooltip content={<ChartTooltip />} />
                   <Bar dataKey="score" fill="#818cf8" name="Average Score" />
                 </BarChart>
               </ResponsiveContainer>
@@ -288,19 +296,16 @@ export function SuperAdminDashboard() {
 
             {/* Radar Chart Comparison */}
             <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
-              <h3 className="text-xl font-bold text-white mb-4">User vs Agent SUS Comparison</h3>
+              <h3 className="text-xl font-bold text-white mb-4">User vs Responder SUS Comparison</h3>
               <ResponsiveContainer width="100%" height={400}>
                 <RadarChart data={radarData}>
                   <PolarGrid stroke="#ffffff20" />
                   <PolarAngleAxis dataKey="metric" stroke="#ffffff80" />
                   <PolarRadiusAxis angle={90} domain={[0, 5]} stroke="#ffffff80" />
                   <Radar name="Motorist Score" dataKey="userScore" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.6} />
-                  <Radar name="Agent Score" dataKey="agentScore" stroke="#10b981" fill="#10b981" fillOpacity={0.6} />
+                  <Radar name="Responder Score" dataKey="agentScore" stroke="#10b981" fill="#10b981" fillOpacity={0.6} />
                   <Legend />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#1e1b4b", border: "1px solid #ffffff20", borderRadius: "8px" }}
-                    labelStyle={{ color: "#ffffff" }}
-                  />
+                  <Tooltip content={<ChartTooltip />} />
                 </RadarChart>
               </ResponsiveContainer>
             </div>
@@ -403,7 +408,7 @@ export function SuperAdminDashboard() {
                 </div>
                 <div className="p-3 bg-black/30 rounded-lg">
                   <span className="text-blue-400">[2026-03-08 14:22:48]</span>
-                  <span className="text-purple-200 ml-2">New agent registration: Bay Vulcanizing Shop</span>
+                  <span className="text-purple-200 ml-2">New responder registration: Bay Vulcanizing Shop</span>
                 </div>
                 <div className="p-3 bg-black/30 rounded-lg">
                   <span className="text-yellow-400">[2026-03-08 14:21:33]</span>

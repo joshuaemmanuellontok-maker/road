@@ -22,6 +22,9 @@ export type UserRegistrationInput = {
   password: string;
 };
 
+export type SubscriptionStatus = "active" | "inactive";
+export type SubscriptionPlan = "monthly" | "six_months" | "annual";
+
 export type UserLoginInput = {
   username: string;
   password: string;
@@ -30,14 +33,25 @@ export type UserLoginInput = {
 export type AgentApplicationInput = {
   ownerName: string;
   mobileNumber: string;
+  organizationName: string;
   serviceCategory: string;
+  serviceCategories?: string[];
   serviceArea: string;
   username: string;
   password: string;
+  liabilityAcknowledged: boolean;
   credentialManifest: Record<string, string | null>;
+  credentialFiles?: Record<string, CredentialFilePayload>;
+};
+
+export type CredentialFilePayload = {
+  name: string;
+  type: string;
+  dataUrl: string;
 };
 
 export type EmergencyDispatchInput = {
+  userId?: string;
   username: string;
   mobileNumber: string;
   locationLabel: string;
@@ -65,6 +79,13 @@ export type DispatchDetails = {
   acceptedAt: string | null;
   arrivedAt: string | null;
   completedAt: string | null;
+  payment: {
+    serviceAmount: number;
+    totalAmount: number;
+    commissionAmount: number;
+    commissionRate: number;
+    subscriptionStatus: SubscriptionStatus;
+  } | null;
   motorist: {
     id: string;
     fullName: string;
@@ -85,12 +106,299 @@ export type DispatchDetails = {
   } | null;
 };
 
+export type DispatchFeedbackRole = "motorist" | "agent";
+
+export type DispatchFeedback = {
+  id: string;
+  dispatchId: string;
+  emergencyReportId: string | null;
+  reviewerUserId: string;
+  reviewerName: string;
+  reviewerRole: DispatchFeedbackRole;
+  revieweeUserId: string;
+  revieweeName: string;
+  revieweeRole: DispatchFeedbackRole;
+  overallRating: number;
+  categoryRatings: Record<string, number>;
+  paidCorrectAmount: boolean | null;
+  comment: string;
+  submittedAt: string | null;
+};
+
+export type DispatchFeedbackPayload = {
+  reviewerUserId: string;
+  reviewerRole: DispatchFeedbackRole;
+  overallRating: number;
+  categoryRatings: Record<string, number>;
+  paidCorrectAmount?: boolean | null;
+  comment?: string;
+};
+
+export type DispatchFeedbackThread = {
+  dispatchId: string;
+  dispatchStatus: string;
+  feedback: DispatchFeedback[];
+};
+
+export type DispatchHistoryEntry = {
+  id: string;
+  dispatchId: string;
+  emergencyReportId: string | null;
+  dispatchStatus: string;
+  completedAt: string | null;
+  counterpartName: string;
+  counterpartRole: DispatchFeedbackRole;
+  locationLabel: string;
+  issueSummary: string;
+  serviceLabel: string;
+  payment: {
+    serviceAmount: number;
+    totalAmount: number;
+    commissionAmount: number;
+    commissionRate: number;
+    subscriptionStatus: SubscriptionStatus;
+  } | null;
+  dispatch: DispatchDetails | null;
+  viewerFeedback: DispatchFeedback | null;
+  counterpartFeedback: DispatchFeedback | null;
+};
+
+export type ForumRole = "motorist" | "agent" | "community";
+export type ForumTopic = "general" | "agent" | "motorist" | "payment" | "road" | "safety";
+
+export type ForumReply = {
+  id: string;
+  threadId: string;
+  authorUserId: string;
+  authorName: string;
+  authorRole: ForumRole;
+  body: string;
+  createdAt: string | null;
+};
+
+export type ForumThread = {
+  id: string;
+  title: string;
+  body: string;
+  topic: ForumTopic;
+  authorUserId: string;
+  authorName: string;
+  authorRole: ForumRole;
+  createdAt: string | null;
+  lastActivityAt: string | null;
+  replyCount: number;
+  replies: ForumReply[];
+};
+
+export type CreateForumThreadInput = {
+  authorUserId: string;
+  authorRole: ForumRole;
+  title: string;
+  body: string;
+  topic: ForumTopic;
+};
+
+export type CreateForumReplyInput = {
+  authorUserId: string;
+  authorRole: ForumRole;
+  body: string;
+};
+
+export type SubscriptionPayment = {
+  id: string;
+  userId: string;
+  payerName: string;
+  payerPhone: string;
+  subscriptionPlan: SubscriptionPlan | null;
+  amount: number;
+  referenceNote: string;
+  status: "pending" | "confirmed" | "rejected";
+  submittedAt: string | null;
+  reviewedAt: string | null;
+};
+
+export type CommunityProfile = {
+  id: string;
+  fullName: string;
+  role: "community";
+  communityCoins: number;
+  communityLifetimeCoins: number;
+  lastCommunityRewardAt: string | null;
+  lastCommunityVisitRewardAt?: string | null;
+  communityCoinLockUntil?: string | null;
+};
+
+export type CommunityRewardOption = {
+  id: string;
+  title: string;
+  coinsRequired: number;
+  cashValue: number;
+};
+
+export type CommunityRedemption = {
+  id: string;
+  userId: string;
+  userName: string;
+  userPhone: string;
+  rewardId: string;
+  rewardTitle: string;
+  cashValue: number;
+  coinsRequired: number;
+  coinsSpent: number;
+  gcashName: string;
+  gcashNumber: string;
+  status: "pending" | "paid" | "rejected";
+  submittedAt: string | null;
+  reviewedAt: string | null;
+};
+
 export async function updateAgentLocation(agentId: string, location: LocationUpdate): Promise<void> {
   await apiRequest<void>(`/agents/${agentId}/location`, {
     method: "PUT",
     body: JSON.stringify(location),
   });
 }
+
+function readForumRole(value: unknown): ForumRole {
+  if (value === "agent" || value === "community") {
+    return value;
+  }
+
+  return "motorist";
+}
+
+function readForumTopic(value: unknown): ForumTopic {
+  if (
+    value === "agent" ||
+    value === "motorist" ||
+    value === "payment" ||
+    value === "road" ||
+    value === "safety"
+  ) {
+    return value;
+  }
+
+  return "general";
+}
+
+function mapForumReply(payload: any): ForumReply {
+  return {
+    id: String(payload?.id ?? ""),
+    threadId: String(payload?.threadId ?? payload?.thread_id ?? ""),
+    authorUserId: String(payload?.authorUserId ?? payload?.author_user_id ?? ""),
+    authorName: String(payload?.authorName ?? payload?.author_name ?? ""),
+    authorRole: readForumRole(payload?.authorRole ?? payload?.author_role),
+    body: String(payload?.body ?? ""),
+    createdAt:
+      payload?.createdAt != null || payload?.created_at != null
+        ? String(payload?.createdAt ?? payload?.created_at)
+        : null,
+  };
+}
+
+function mapForumThread(payload: any): ForumThread {
+  const replies = Array.isArray(payload?.replies) ? payload.replies.map(mapForumReply) : [];
+
+  return {
+    id: String(payload?.id ?? ""),
+    title: String(payload?.title ?? ""),
+    body: String(payload?.body ?? ""),
+    topic: readForumTopic(payload?.topic),
+    authorUserId: String(payload?.authorUserId ?? payload?.author_user_id ?? ""),
+    authorName: String(payload?.authorName ?? payload?.author_name ?? ""),
+    authorRole: readForumRole(payload?.authorRole ?? payload?.author_role),
+    createdAt:
+      payload?.createdAt != null || payload?.created_at != null
+        ? String(payload?.createdAt ?? payload?.created_at)
+        : null,
+    lastActivityAt:
+      payload?.lastActivityAt != null || payload?.last_activity_at != null
+        ? String(payload?.lastActivityAt ?? payload?.last_activity_at)
+        : null,
+    replyCount: Number(payload?.replyCount ?? payload?.reply_count ?? replies.length ?? 0),
+    replies,
+  };
+}
+
+function mapSubscriptionPayment(payload: any): SubscriptionPayment {
+  return {
+    id: String(payload?.id ?? ""),
+    userId: String(payload?.userId ?? payload?.user_id ?? ""),
+    payerName: String(payload?.payerName ?? payload?.payer_name ?? ""),
+    payerPhone: String(payload?.payerPhone ?? payload?.payer_phone ?? ""),
+    subscriptionPlan:
+      payload?.subscriptionPlan === "monthly" ||
+      payload?.subscriptionPlan === "six_months" ||
+      payload?.subscriptionPlan === "annual"
+        ? payload.subscriptionPlan
+        : null,
+    amount: Number(payload?.amount ?? 0),
+    referenceNote: String(payload?.referenceNote ?? payload?.reference_note ?? ""),
+    status:
+      payload?.status === "confirmed" || payload?.status === "rejected"
+        ? payload.status
+        : "pending",
+    submittedAt:
+      payload?.submittedAt != null || payload?.submitted_at != null
+        ? String(payload?.submittedAt ?? payload?.submitted_at)
+        : null,
+    reviewedAt:
+      payload?.reviewedAt != null || payload?.reviewed_at != null
+        ? String(payload?.reviewedAt ?? payload?.reviewed_at)
+        : null,
+  };
+}
+
+function mapCommunityProfile(payload: any): CommunityProfile {
+  return {
+    id: String(payload?.id ?? ""),
+    fullName: String(payload?.fullName ?? payload?.full_name ?? ""),
+    role: "community",
+    communityCoins: Number(payload?.communityCoins ?? payload?.community_coin_balance ?? 0),
+    communityLifetimeCoins: Number(payload?.communityLifetimeCoins ?? payload?.community_lifetime_coins ?? 0),
+    lastCommunityRewardAt:
+      payload?.lastCommunityRewardAt != null || payload?.community_last_coin_activity_at != null
+        ? String(payload?.lastCommunityRewardAt ?? payload?.community_last_coin_activity_at)
+        : null,
+    lastCommunityVisitRewardAt:
+      payload?.lastCommunityVisitRewardAt != null || payload?.community_last_visit_reward_at != null
+        ? String(payload?.lastCommunityVisitRewardAt ?? payload?.community_last_visit_reward_at)
+        : null,
+    communityCoinLockUntil:
+      payload?.communityCoinLockUntil != null || payload?.community_coin_lock_until != null
+        ? String(payload?.communityCoinLockUntil ?? payload?.community_coin_lock_until)
+        : null,
+  };
+}
+
+function mapCommunityRedemption(payload: any): CommunityRedemption {
+  return {
+    id: String(payload?.id ?? ""),
+    userId: String(payload?.userId ?? payload?.user_id ?? ""),
+    userName: String(payload?.userName ?? payload?.user_name ?? ""),
+    userPhone: String(payload?.userPhone ?? payload?.user_phone ?? ""),
+    rewardId: String(payload?.rewardId ?? payload?.reward_id ?? ""),
+    rewardTitle: String(payload?.rewardTitle ?? payload?.reward_title ?? ""),
+    cashValue: Number(payload?.cashValue ?? payload?.cash_value ?? 0),
+    coinsRequired: Number(payload?.coinsRequired ?? payload?.coins_required ?? 0),
+    coinsSpent: Number(payload?.coinsSpent ?? payload?.coins_spent ?? 0),
+    gcashName: String(payload?.gcashName ?? payload?.gcash_name ?? ""),
+    gcashNumber: String(payload?.gcashNumber ?? payload?.gcash_number ?? ""),
+    status:
+      payload?.status === "paid" || payload?.status === "rejected"
+        ? payload.status
+        : "pending",
+    submittedAt:
+      payload?.submittedAt != null || payload?.submitted_at != null
+        ? String(payload?.submittedAt ?? payload?.submitted_at)
+        : null,
+    reviewedAt:
+      payload?.reviewedAt != null || payload?.reviewed_at != null
+        ? String(payload?.reviewedAt ?? payload?.reviewed_at)
+        : null,
+  };
+}
+
 export function updateAgentAvailability(agentId: string, isAvailable: boolean): Promise<void> {
   return apiRequest<void>(`/agents/${agentId}/availability`, {
     method: "PUT",
@@ -98,7 +406,65 @@ export function updateAgentAvailability(agentId: string, isAvailable: boolean): 
   });
 }
 export async function fetchDispatchDetails(dispatchId: string): Promise<DispatchDetails> {
-  return apiRequest<DispatchDetails>(`/dispatches/${dispatchId}`);
+  const payload = await apiRequest<any>(`/dispatches/${dispatchId}`);
+
+  return {
+    id: String(payload?.id ?? ""),
+    emergencyReportId: String(payload?.emergencyReportId ?? payload?.emergency_report_id ?? ""),
+    agentUserId:
+      payload?.agentUserId != null || payload?.agent_user_id != null
+        ? String(payload?.agentUserId ?? payload?.agent_user_id)
+        : null,
+    repairShopId:
+      payload?.repairShopId != null || payload?.repair_shop_id != null
+        ? String(payload?.repairShopId ?? payload?.repair_shop_id)
+        : null,
+    dispatchStatus: String(payload?.dispatchStatus ?? payload?.dispatch_status ?? ""),
+    assignedAt: String(payload?.assignedAt ?? payload?.assigned_at ?? ""),
+    acceptedAt:
+      payload?.acceptedAt != null || payload?.accepted_at != null
+        ? String(payload?.acceptedAt ?? payload?.accepted_at)
+        : null,
+    arrivedAt:
+      payload?.arrivedAt != null || payload?.arrived_at != null
+        ? String(payload?.arrivedAt ?? payload?.arrived_at)
+        : null,
+    completedAt:
+      payload?.completedAt != null || payload?.completed_at != null
+        ? String(payload?.completedAt ?? payload?.completed_at)
+        : null,
+    payment: payload?.payment
+      ? {
+          serviceAmount: Number(payload.payment.serviceAmount ?? payload.payment.service_amount ?? 0),
+          totalAmount: Number(payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
+          commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
+          commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
+          subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+        }
+      : null,
+    motorist: {
+      id: String(payload?.motorist?.id ?? payload?.motorist_id ?? ""),
+      fullName: String(payload?.motorist?.fullName ?? payload?.motorist?.full_name ?? payload?.motorist_name ?? ""),
+      phone: String(payload?.motorist?.phone ?? payload?.motorist_phone ?? ""),
+      latitude: Number(payload?.motorist?.latitude ?? payload?.motorist_latitude ?? 0),
+      longitude: Number(payload?.motorist?.longitude ?? payload?.motorist_longitude ?? 0),
+      locationLabel: String(payload?.motorist?.locationLabel ?? payload?.motorist?.location_label ?? payload?.location_label ?? ""),
+      issueSummary: String(payload?.motorist?.issueSummary ?? payload?.motorist?.issue_summary ?? ""),
+      symptoms: Array.isArray(payload?.motorist?.symptoms)
+        ? payload.motorist.symptoms.map((item: unknown) => String(item))
+        : [],
+    },
+    agent: payload?.agent
+      ? {
+          id: String(payload.agent.id ?? ""),
+          fullName: String(payload.agent.fullName ?? payload.agent.full_name ?? ""),
+          phone: String(payload.agent.phone ?? ""),
+          businessName: String(payload.agent.businessName ?? payload.agent.business_name ?? ""),
+          currentLatitude: payload.agent.currentLatitude != null ? Number(payload.agent.currentLatitude) : null,
+          currentLongitude: payload.agent.currentLongitude != null ? Number(payload.agent.currentLongitude) : null,
+        }
+      : null,
+  };
 }
 
 export interface RouteData {
@@ -166,14 +532,56 @@ export type UserLoginResponse = {
   id: string;
   fullName: string;
   email: string;
+  phone?: string;
   role: string;
+  subscriptionStatus?: SubscriptionStatus;
+  subscriptionPlan?: SubscriptionPlan | null;
+  subscriptionActivatedAt?: string | null;
+  subscriptionExpiresAt?: string | null;
+  communityCoins?: number;
+  communityLifetimeCoins?: number;
+  lastCommunityRewardAt?: string | null;
 };
 
 export type AgentLoginResponse = {
   id: string;
   fullName: string;
   email: string;
+  phone?: string;
   role: string;
+  balanceProofStatus?: string;
+  balanceProofExpiresAt?: string | null;
+  walletReadinessTier?: "tier_1" | "tier_2" | null;
+};
+
+export type AgentBalanceProofStatus = {
+  hasProof: boolean;
+  isApproved: boolean;
+  isExpired: boolean;
+  canGoOnline: boolean;
+  status: string;
+  tier: "tier_1" | "tier_2" | null;
+  tierLabel: string;
+  submittedAt: string | null;
+  reviewedAt: string | null;
+  expiresAt: string | null;
+  approvedBy: string | null;
+  proofUrl: string | null;
+  rejectionReason?: string;
+};
+
+export type AgentPaymentProfile = {
+  userId: string;
+  fullName: string;
+  phone: string;
+  businessName: string;
+  organizationName: string;
+  serviceArea: string;
+  gcashName: string;
+  gcashNumber: string;
+  payoutNotes: string;
+  liabilityAcknowledged: boolean;
+  balanceProof: AgentBalanceProofStatus;
 };
 
 function detectDevHost() {
@@ -192,7 +600,7 @@ function detectDevHost() {
 }
 
 const detectedHost = detectDevHost();
-const apiBaseUrl =
+export const apiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
   (detectedHost
     ? `http://${detectedHost}:4000/api`
@@ -227,6 +635,52 @@ export function registerUserProfile(input: UserRegistrationInput) {
   });
 }
 
+export function registerCommunityProfile(input: UserRegistrationInput) {
+  return apiRequest<{ id: string }>("/community/register", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchForumThreads(): Promise<ForumThread[]> {
+  const payload = await apiRequest<any[]>("/forum/threads");
+  return Array.isArray(payload) ? payload.map(mapForumThread) : [];
+}
+
+export async function createForumThread(input: CreateForumThreadInput): Promise<ForumThread> {
+  const payload = await apiRequest<any>("/forum/threads", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  return mapForumThread(payload);
+}
+
+export async function createForumReply(
+  threadId: string,
+  input: CreateForumReplyInput,
+): Promise<ForumReply> {
+  const payload = await apiRequest<any>(`/forum/threads/${threadId}/replies`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  return mapForumReply(payload);
+}
+
+export async function createSubscriptionPayment(input: {
+  userId: string;
+  subscriptionPlan: SubscriptionPlan;
+  referenceNote?: string;
+}): Promise<SubscriptionPayment> {
+  const payload = await apiRequest<any>("/subscription-payments", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  return mapSubscriptionPayment(payload);
+}
+
 export function submitAgentApplication(input: AgentApplicationInput) {
   return apiRequest<{ id: string }>("/agent-applications/register", {
     method: "POST",
@@ -253,6 +707,135 @@ export function loginAgent(input: UserLoginInput) {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+function mapAgentPaymentProfile(payload: any): AgentPaymentProfile {
+  return {
+    userId: String(payload?.userId ?? payload?.user_id ?? ""),
+    fullName: String(payload?.fullName ?? payload?.full_name ?? ""),
+    phone: String(payload?.phone ?? ""),
+    businessName: String(payload?.businessName ?? payload?.business_name ?? ""),
+    organizationName: String(payload?.organizationName ?? payload?.organization_name ?? ""),
+    serviceArea: String(payload?.serviceArea ?? payload?.service_area ?? ""),
+    gcashName: String(payload?.gcashName ?? payload?.gcash_name ?? ""),
+    gcashNumber: String(payload?.gcashNumber ?? payload?.gcash_number ?? ""),
+    payoutNotes: String(payload?.payoutNotes ?? payload?.payout_notes ?? ""),
+    liabilityAcknowledged: Boolean(payload?.liabilityAcknowledged ?? payload?.liability_acknowledged),
+    balanceProof: {
+      hasProof: Boolean(payload?.balanceProof?.hasProof),
+      isApproved: Boolean(payload?.balanceProof?.isApproved),
+      isExpired: Boolean(payload?.balanceProof?.isExpired),
+      canGoOnline: Boolean(payload?.balanceProof?.canGoOnline),
+      status: String(payload?.balanceProof?.status ?? "missing"),
+      tier:
+        payload?.balanceProof?.tier === "tier_1" || payload?.balanceProof?.tier === "tier_2"
+          ? payload.balanceProof.tier
+          : null,
+      tierLabel: String(payload?.balanceProof?.tierLabel ?? "Not verified"),
+      submittedAt:
+        payload?.balanceProof?.submittedAt != null ? String(payload.balanceProof.submittedAt) : null,
+      reviewedAt:
+        payload?.balanceProof?.reviewedAt != null ? String(payload.balanceProof.reviewedAt) : null,
+      expiresAt:
+        payload?.balanceProof?.expiresAt != null ? String(payload.balanceProof.expiresAt) : null,
+      approvedBy:
+        payload?.balanceProof?.approvedBy != null ? String(payload.balanceProof.approvedBy) : null,
+      proofUrl:
+        payload?.balanceProof?.proofUrl != null ? String(payload.balanceProof.proofUrl) : null,
+      rejectionReason:
+        payload?.balanceProof?.rejectionReason != null ? String(payload.balanceProof.rejectionReason) : "",
+    },
+  };
+}
+
+export async function fetchAgentPaymentProfile(agentId: string): Promise<AgentPaymentProfile> {
+  const payload = await apiRequest<any>(`/agents/${agentId}/profile`);
+  return mapAgentPaymentProfile(payload);
+}
+
+export async function updateAgentPaymentProfile(
+  agentId: string,
+  input: { gcashName: string; gcashNumber: string; payoutNotes?: string },
+): Promise<AgentPaymentProfile> {
+  const payload = await apiRequest<any>(`/agents/${agentId}/profile/payment`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+  return mapAgentPaymentProfile(payload);
+}
+
+export async function uploadAgentBalanceProof(
+  agentId: string,
+  proofFile: CredentialFilePayload,
+): Promise<AgentPaymentProfile> {
+  const payload = await apiRequest<any>(`/agents/${agentId}/balance-proof`, {
+    method: "POST",
+    body: JSON.stringify({ proofFile }),
+  });
+  return mapAgentPaymentProfile(payload);
+}
+
+export function loginCommunity(input: UserLoginInput) {
+  return apiRequest<UserLoginResponse>("/community/login", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchCommunityProfile(userId: string): Promise<CommunityProfile> {
+  const payload = await apiRequest<any>(`/community/profile/${userId}`);
+  return mapCommunityProfile(payload);
+}
+
+export async function awardCommunityForumVisit(userId: string): Promise<{
+  awarded: boolean;
+  amount: number;
+  profile: CommunityProfile;
+}> {
+  const payload = await apiRequest<any>("/community/rewards/forum-visit", {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+
+  return {
+    awarded: Boolean(payload?.awarded),
+    amount: Number(payload?.amount ?? 0),
+    profile: mapCommunityProfile(payload?.profile),
+  };
+}
+
+export async function fetchCommunityRewardOptions(): Promise<CommunityRewardOption[]> {
+  const payload = await apiRequest<any[]>("/community/rewards/options");
+  return Array.isArray(payload)
+    ? payload.map((item) => ({
+        id: String(item?.id ?? ""),
+        title: String(item?.title ?? ""),
+        coinsRequired: Number(item?.coinsRequired ?? item?.coins_required ?? 0),
+        cashValue: Number(item?.cashValue ?? item?.cash_value ?? 0),
+      }))
+    : [];
+}
+
+export async function fetchCommunityRedemptions(): Promise<CommunityRedemption[]> {
+  const payload = await apiRequest<any[]>("/community/redemptions");
+  return Array.isArray(payload) ? payload.map(mapCommunityRedemption) : [];
+}
+
+export async function createCommunityRedemption(input: {
+  userId: string;
+  rewardId: string;
+  gcashName: string;
+  gcashNumber: string;
+}): Promise<{ redemption: CommunityRedemption; profile: CommunityProfile | null }> {
+  const payload = await apiRequest<any>("/community/redemptions", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  return {
+    redemption: mapCommunityRedemption(payload),
+    profile: payload?.profile ? mapCommunityProfile(payload.profile) : null,
+  };
 }
 
 export type NearbyAgent = {
@@ -290,6 +873,220 @@ export function updateDispatchStatus(dispatchId: string, status: string) {
   });
 }
 
-export function findNearbyAgents(latitude: number, longitude: number) {
-  return apiRequest<NearbyAgent[]>(`/agents/nearby?lat=${latitude}&lng=${longitude}`);
+export function completeDispatch(dispatchId: string, totalAmount: number) {
+  return apiRequest<{ success: boolean; dispatch: any }>(`/dispatches/${dispatchId}/status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "completed", totalAmount }),
+  });
+}
+
+
+function mapDispatchFeedback(payload: any): DispatchFeedback {
+  return {
+    id: String(payload?.id ?? ""),
+    dispatchId: String(payload?.dispatch_id ?? payload?.dispatchId ?? ""),
+    emergencyReportId:
+      payload?.emergency_report_id != null || payload?.emergencyReportId != null
+        ? String(payload?.emergency_report_id ?? payload?.emergencyReportId)
+        : null,
+    reviewerUserId: String(payload?.reviewer_user_id ?? payload?.reviewerUserId ?? ""),
+    reviewerName: String(payload?.reviewer_name ?? payload?.reviewerName ?? ""),
+    reviewerRole: String(payload?.reviewer_role ?? payload?.reviewerRole ?? "motorist") as DispatchFeedbackRole,
+    revieweeUserId: String(payload?.reviewee_user_id ?? payload?.revieweeUserId ?? ""),
+    revieweeName: String(payload?.reviewee_name ?? payload?.revieweeName ?? ""),
+    revieweeRole: String(payload?.reviewee_role ?? payload?.revieweeRole ?? "agent") as DispatchFeedbackRole,
+    overallRating: Number(payload?.overall_rating ?? payload?.overallRating ?? 0),
+    categoryRatings:
+      payload?.category_ratings && typeof payload.category_ratings === "object"
+        ? payload.category_ratings
+        : payload?.categoryRatings && typeof payload.categoryRatings === "object"
+          ? payload.categoryRatings
+          : {},
+    paidCorrectAmount:
+      typeof (payload?.paid_correct_amount ?? payload?.paidCorrectAmount) === "boolean"
+        ? Boolean(payload?.paid_correct_amount ?? payload?.paidCorrectAmount)
+        : null,
+    comment: String(payload?.comment ?? ""),
+    submittedAt:
+      payload?.submitted_at != null || payload?.submittedAt != null
+        ? String(payload?.submitted_at ?? payload?.submittedAt)
+        : null,
+  };
+}
+
+function mapDispatchHistoryEntry(payload: any): DispatchHistoryEntry {
+  return {
+    id: String(payload?.id ?? ""),
+    dispatchId: String(payload?.dispatchId ?? payload?.dispatch_id ?? ""),
+    emergencyReportId:
+      payload?.emergencyReportId != null || payload?.emergency_report_id != null
+        ? String(payload?.emergencyReportId ?? payload?.emergency_report_id)
+        : null,
+    dispatchStatus: String(payload?.dispatchStatus ?? payload?.dispatch_status ?? ""),
+    completedAt:
+      payload?.completedAt != null || payload?.completed_at != null
+        ? String(payload?.completedAt ?? payload?.completed_at)
+        : null,
+    counterpartName: String(payload?.counterpartName ?? payload?.counterpart_name ?? ""),
+    counterpartRole: String(payload?.counterpartRole ?? payload?.counterpart_role ?? "motorist") as DispatchFeedbackRole,
+    locationLabel: String(payload?.locationLabel ?? payload?.location_label ?? ""),
+    issueSummary: String(payload?.issueSummary ?? payload?.issue_summary ?? ""),
+    serviceLabel: String(payload?.serviceLabel ?? payload?.service_label ?? ""),
+    payment: payload?.payment
+      ? {
+          serviceAmount: Number(payload.payment.serviceAmount ?? payload.payment.service_amount ?? 0),
+          totalAmount: Number(payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
+          commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
+          commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
+          subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+        }
+      : null,
+    dispatch: payload?.dispatch
+      ? {
+          id: String(payload.dispatch.id ?? ""),
+          emergencyReportId: String(payload.dispatch.emergencyReportId ?? payload.dispatch.emergency_report_id ?? ""),
+          agentUserId:
+            payload.dispatch.agentUserId != null || payload.dispatch.agent_user_id != null
+              ? String(payload.dispatch.agentUserId ?? payload.dispatch.agent_user_id)
+              : null,
+          repairShopId:
+            payload.dispatch.repairShopId != null || payload.dispatch.repair_shop_id != null
+              ? String(payload.dispatch.repairShopId ?? payload.dispatch.repair_shop_id)
+              : null,
+          dispatchStatus: String(payload.dispatch.dispatchStatus ?? payload.dispatch.dispatch_status ?? ""),
+          assignedAt: String(payload.dispatch.assignedAt ?? payload.dispatch.assigned_at ?? ""),
+          acceptedAt:
+            payload.dispatch.acceptedAt != null || payload.dispatch.accepted_at != null
+              ? String(payload.dispatch.acceptedAt ?? payload.dispatch.accepted_at)
+              : null,
+          arrivedAt:
+            payload.dispatch.arrivedAt != null || payload.dispatch.arrived_at != null
+              ? String(payload.dispatch.arrivedAt ?? payload.dispatch.arrived_at)
+              : null,
+          completedAt:
+            payload.dispatch.completedAt != null || payload.dispatch.completed_at != null
+              ? String(payload.dispatch.completedAt ?? payload.dispatch.completed_at)
+              : null,
+          payment: payload.dispatch.payment
+            ? {
+                serviceAmount: Number(payload.dispatch.payment.serviceAmount ?? payload.dispatch.payment.service_amount ?? 0),
+                totalAmount: Number(payload.dispatch.payment.totalAmount ?? payload.dispatch.payment.total_amount ?? 0),
+                commissionAmount: Number(payload.dispatch.payment.commissionAmount ?? payload.dispatch.payment.commission_amount ?? 0),
+                commissionRate: Number(payload.dispatch.payment.commissionRate ?? payload.dispatch.payment.commission_rate ?? 0),
+                subscriptionStatus: payload.dispatch.payment.subscriptionStatus === "active" ? "active" : "inactive",
+              }
+            : null,
+          motorist: {
+            id: String(payload.dispatch.motorist?.id ?? ""),
+            fullName: String(payload.dispatch.motorist?.fullName ?? payload.dispatch.motorist?.full_name ?? ""),
+            phone: String(payload.dispatch.motorist?.phone ?? ""),
+            latitude: Number(payload.dispatch.motorist?.latitude ?? 0),
+            longitude: Number(payload.dispatch.motorist?.longitude ?? 0),
+            locationLabel: String(payload.dispatch.motorist?.locationLabel ?? payload.dispatch.motorist?.location_label ?? ""),
+            issueSummary: String(payload.dispatch.motorist?.issueSummary ?? payload.dispatch.motorist?.issue_summary ?? ""),
+            symptoms: Array.isArray(payload.dispatch.motorist?.symptoms)
+              ? payload.dispatch.motorist.symptoms.map((item: unknown) => String(item))
+              : [],
+          },
+          agent: payload.dispatch.agent
+            ? {
+                id: String(payload.dispatch.agent.id ?? ""),
+                fullName: String(payload.dispatch.agent.fullName ?? payload.dispatch.agent.full_name ?? ""),
+                phone: String(payload.dispatch.agent.phone ?? ""),
+                businessName: String(payload.dispatch.agent.businessName ?? payload.dispatch.agent.business_name ?? ""),
+                currentLatitude:
+                  payload.dispatch.agent.currentLatitude != null
+                    ? Number(payload.dispatch.agent.currentLatitude)
+                    : null,
+                currentLongitude:
+                  payload.dispatch.agent.currentLongitude != null
+                    ? Number(payload.dispatch.agent.currentLongitude)
+                    : null,
+              }
+            : null,
+        }
+      : null,
+    viewerFeedback: payload?.viewerFeedback ? mapDispatchFeedback(payload.viewerFeedback) : null,
+    counterpartFeedback: payload?.counterpartFeedback ? mapDispatchFeedback(payload.counterpartFeedback) : null,
+  };
+}
+
+export async function fetchDispatchFeedback(
+  dispatchId: string,
+  reviewerUserId: string,
+  reviewerRole: DispatchFeedbackRole,
+): Promise<DispatchFeedback | null> {
+  const query = new URLSearchParams({
+    reviewerUserId,
+    reviewerRole,
+  });
+
+  const payload = await apiRequest<any>(`/dispatches/${dispatchId}/feedback?${query.toString()}`);
+  if (!payload) {
+    return null;
+  }
+
+  return mapDispatchFeedback(payload);
+}
+
+export async function submitDispatchFeedback(
+  dispatchId: string,
+  payload: DispatchFeedbackPayload,
+): Promise<DispatchFeedback> {
+  const response = await apiRequest<any>(`/dispatches/${dispatchId}/feedback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+
+  return mapDispatchFeedback(response);
+}
+
+export async function fetchDispatchFeedbackThread(
+  dispatchId: string,
+  viewerUserId: string,
+  viewerRole: DispatchFeedbackRole,
+): Promise<DispatchFeedbackThread> {
+  const query = new URLSearchParams({
+    viewerUserId,
+    viewerRole,
+  });
+
+  const payload = await apiRequest<any>(`/dispatches/${dispatchId}/feedback/all?${query.toString()}`);
+
+  return {
+    dispatchId: String(payload?.dispatchId ?? dispatchId),
+    dispatchStatus: String(payload?.dispatchStatus ?? ""),
+    feedback: Array.isArray(payload?.feedback) ? payload.feedback.map(mapDispatchFeedback) : [],
+  };
+}
+
+export async function fetchDispatchHistory(
+  userId: string,
+  role: DispatchFeedbackRole,
+): Promise<DispatchHistoryEntry[]> {
+  const query = new URLSearchParams({
+    userId,
+    role,
+  });
+
+  const payload = await apiRequest<any[]>(`/dispatches/history?${query.toString()}`);
+  return Array.isArray(payload) ? payload.map(mapDispatchHistoryEntry) : [];
+}
+
+export function findNearbyAgents(latitude: number, longitude: number, serviceType?: string, userId?: string | null) {
+  const params = new URLSearchParams({
+    lat: String(latitude),
+    lng: String(longitude),
+    radius: "20",
+  });
+
+  if (serviceType) {
+    params.set("serviceType", serviceType);
+  }
+
+  if (userId) {
+    params.set("userId", userId);
+  }
+
+  return apiRequest<NearbyAgent[]>(`/agents/nearby?${params.toString()}`);
 }

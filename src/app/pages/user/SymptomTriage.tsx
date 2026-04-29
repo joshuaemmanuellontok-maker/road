@@ -152,7 +152,7 @@ export function SymptomTriage() {
                     Tap to upload photos or videos
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Help agents diagnose the issue faster
+                    Help responders diagnose the issue faster
                   </p>
                 </div>
               </label>
@@ -172,7 +172,7 @@ export function SymptomTriage() {
             <div className="text-xs text-yellow-100">
               <p className="font-medium mb-0.5">Symptom Classification</p>
               <p>
-                Your symptoms will be classified to match you with the most appropriate rescue agent.
+                Your symptoms will be classified to match you with the most appropriate rescue responder.
               </p>
             </div>
           </div>
@@ -183,7 +183,7 @@ export function SymptomTriage() {
             disabled={selectedSymptoms.length === 0}
             className="w-full bg-[#ff6b3d] text-white py-4 rounded-xl font-semibold hover:bg-[#ff5722] transition-colors disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed"
           >
-            Find Rescue Agent
+            Find Rescue Responder
           </button>
         </div>
       </main>

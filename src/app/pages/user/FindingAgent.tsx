@@ -127,10 +127,10 @@ export function FindingAgent() {
               </div>
             </div>
             <h2 className="text-xl font-bold text-white mb-2">
-              Finding Nearest Agent...
+              Finding Nearest Responder...
             </h2>
             <p className="text-sm text-gray-400 mb-5">
-              Searching for available rescue agents in your area
+              Searching for available rescue responders in your area
             </p>
             <div className="space-y-2 max-w-md mx-auto">
               <motion.div
@@ -155,10 +155,10 @@ export function FindingAgent() {
                 <Car className="w-7 h-7 text-green-400" />
               </div>
               <h2 className="text-xl font-bold text-white mb-1.5">
-                Agent Found!
+                Responder Found!
               </h2>
               <p className="text-sm text-gray-400">
-                We've matched you with a nearby rescue agent
+                We've matched you with a nearby rescue responder
               </p>
             </div>
 
@@ -241,7 +241,7 @@ export function FindingAgent() {
                 className="flex items-center justify-center gap-2 w-full py-3 bg-gray-700 text-white text-sm rounded-lg font-medium hover:bg-gray-600 transition-colors"
               >
                 <Phone className="w-4 h-4" />
-                Contact Agent
+                Contact Responder
               </a>
             </div>
 

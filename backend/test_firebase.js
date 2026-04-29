@@ -13,9 +13,9 @@ async function testFirebaseConnection() {
     console.log('  - users');
     console.log('  - motorist_profiles');
     console.log('  - admin_profiles');
-    console.log('  - agent_profiles');
+    console.log('  - responder_profiles');
     console.log('  - repair_shops');
-    console.log('  - agent_applications');
+    console.log('  - responder_applications');
     console.log('  - emergency_reports');
     console.log('  - emergency_report_symptoms');
     console.log('  - dispatches');

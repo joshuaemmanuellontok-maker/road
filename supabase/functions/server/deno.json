@@ -1,0 +1,12 @@
+{
+  "imports": {
+    "hono": "npm:hono@4.0.0",
+    "hono/cors": "npm:hono@4.0.0/cors",
+    "hono/logger": "npm:hono@4.0.0/logger"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx"
+  }
+}

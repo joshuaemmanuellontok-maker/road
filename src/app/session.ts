@@ -5,6 +5,9 @@ export interface StoredUserSession {
   role: string;
   username: string;
   mobileNumber?: string;
+  communityCoins?: number;
+  communityLifetimeCoins?: number;
+  lastCommunityRewardAt?: string | null;
 }
 
 export interface EmergencyDraft {

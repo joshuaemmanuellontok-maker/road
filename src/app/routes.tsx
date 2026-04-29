@@ -12,6 +12,11 @@ import { AgentLogin } from "./pages/agent/AgentLogin";
 import { AgentRegister } from "./pages/agent/AgentRegister";
 import { AgentDashboard } from "./pages/agent/AgentDashboard";
 import { AgentNavigation } from "./pages/agent/AgentNavigation";
+import { CommunityLogin } from "./pages/community/CommunityLogin";
+import { CommunityRegister } from "./pages/community/CommunityRegister";
+import { CommunityDashboard } from "./pages/community/CommunityDashboard";
+import { DispatchFeedbackView } from "./pages/shared/DispatchFeedbackView";
+import { CommunityForum } from "./pages/shared/CommunityForum";
 import { AdminLogin } from "./pages/admin/AdminLogin";
 import { AdminDashboard } from "./pages/admin/AdminDashboard";
 import { SuperAdminDashboard } from "./pages/admin/SuperAdminDashboard";
@@ -32,6 +37,11 @@ export const router = createBrowserRouter([
       { path: "user/triage", Component: SymptomTriage },
       { path: "user/finding-agent", Component: FindingAgent },
       { path: "user/tracking/:dispatchId", Component: LiveTracking },
+      { path: "community/forum", Component: CommunityForum },
+      { path: "community/login", Component: CommunityLogin },
+      { path: "community/register", Component: CommunityRegister },
+      { path: "community/dashboard", Component: CommunityDashboard },
+      { path: "feedback/:dispatchId", Component: DispatchFeedbackView },
       
       // Agent (Responder) Routes
       { path: "agent/login", Component: AgentLogin },
