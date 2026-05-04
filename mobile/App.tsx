@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Image,
   ImageBackground,
+  Linking,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -13,7 +13,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
 import * as Location from "expo-location";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
@@ -28,6 +27,8 @@ import {
   createForumThread,
   createForumReply,
   createSubscriptionPayment,
+  fetchSoteriaCredits,
+  topUpSoteriaCredits,
   createCommunityRedemption,
   loginUser as apiLoginUser,
   loginAgent as apiLoginAgent,
@@ -63,11 +64,11 @@ import {
   type SubscriptionPayment,
   fetchAgentPaymentProfile,
   updateAgentPaymentProfile,
-  uploadAgentBalanceProof,
 } from "./src/lib/roadresqApi";
 import { SERVICE_CATEGORY_LABELS, type ServiceCategory } from "../packages/shared/src";
 import { MotorietTrackingScreen } from "./src/components/MotorietTrackingScreen";
 import { AgentTrackingScreen } from "./src/components/AgentTrackingScreen";
+import { LeafletMap, type LeafletMarker, type LeafletRoutePoint } from "./src/components/LeafletMap";
 
 let notificationsModulePromise: Promise<typeof import("expo-notifications") | null> | null = null;
 
@@ -160,6 +161,7 @@ type AgentMatch = {
   rating: number;
   distanceKm: number;
   services: string[];
+  cashAssistReady?: boolean;
 };
 type Request = {
   id: string;
@@ -213,12 +215,11 @@ const mechanicalSymptoms = [
   "Transmission problem",
 ];
 
-const baseLocation: Coords = { latitude: 14.0676, longitude: 121.4174 };
+const baseLocation: Coords = { latitude: 14.4436, longitude: 121.4321 };
 const shops: Shop[] = [
-  { id: "1", name: "Mang Pedring Auto Repair", category: "mechanical", rating: 4.9, distanceKm: 1.2, address: "San Pablo City, Laguna", responseTime: "~15 min", openNow: true, coord: { latitude: 14.068, longitude: 121.418 }, services: ["Engine repair", "Brake service", "Diagnostic scan"] },
-  { id: "2", name: "Bay Vulcanizing Shop", category: "vulcanizing", rating: 4.8, distanceKm: 2.5, address: "Bay, Laguna", responseTime: "~20 min", openNow: true, coord: { latitude: 14.065, longitude: 121.42 }, services: ["Tire repair", "Wheel balancing", "Patch and inflate"] },
-  { id: "3", name: "Calauan Towing Service", category: "towing", rating: 4.7, distanceKm: 3.8, address: "Calauan, Laguna", responseTime: "~25 min", openNow: true, coord: { latitude: 14.07, longitude: 121.415 }, services: ["Flatbed towing", "Roadside pickup", "Winch out"] },
-  { id: "4", name: "Los Banos Auto Electric", category: "electrical", rating: 4.6, distanceKm: 4.2, address: "Los Banos, Laguna", responseTime: "~30 min", openNow: false, coord: { latitude: 14.063, longitude: 121.422 }, services: ["Battery replacement", "Wiring check", "Alternator repair"] },
+  { id: "1", name: "Siniloan Roadside Auto Care", category: "mechanical", rating: 4.8, distanceKm: 1.4, address: "Siniloan, Laguna", responseTime: "~15 min", openNow: true, coord: { latitude: 14.4211, longitude: 121.4461 }, services: ["Mechanical", "Engine repair", "Brake service", "Diagnostic scan"] },
+  { id: "2", name: "Famy Tire and Vulcanizing Center", category: "vulcanizing", rating: 4.7, distanceKm: 2.1, address: "Famy, Laguna", responseTime: "~20 min", openNow: true, coord: { latitude: 14.4379, longitude: 121.4486 }, services: ["Vulcanizing", "Tire repair", "Wheel balancing", "Patch and inflate"] },
+  { id: "3", name: "Santa Maria Laguna Towing and Auto Electric", category: "towing", rating: 4.6, distanceKm: 3.5, address: "Santa Maria, Laguna", responseTime: "~25 min", openNow: true, coord: { latitude: 14.4719, longitude: 121.4281 }, services: ["Mechanical", "Vulcanizing", "Towing", "Electrical", "Battery service", "General roadside assistance"] },
 ];
 const requestsSeed: Request[] = [
   { id: "REQ-001", motorist: "Maria Santos", phone: "+63 917 123 4567", location: "San Pablo City - National Highway", distance: "1.2 km", vehicleType: "Sedan", fee: "PHP 350", priority: "high", symptoms: ["Flat tire"] },
@@ -230,6 +231,21 @@ const historySeed = [
   "Vulcanizing - Linda Cruz - PHP 250",
 ];
 const categories = Object.entries(SERVICE_CATEGORY_LABELS) as [ServiceCategory, string][];
+
+function shopOffersCategory(shop: Shop, category: ServiceCategory) {
+  const selectedLabel = SERVICE_CATEGORY_LABELS[category].toLowerCase();
+  const serviceTokens = shop.services.map((service) => service.toLowerCase());
+
+  return (
+    shop.category === category ||
+    serviceTokens.some((service) =>
+      service === selectedLabel ||
+      service.includes(selectedLabel) ||
+      service.includes(category),
+    )
+  );
+}
+
 const forumTopics: Array<{ value: ForumTopic; label: string }> = [
   { value: "general", label: "General" },
   { value: "agent", label: "Responders" },
@@ -252,52 +268,68 @@ const subscriptionOffers: Array<{
   value: SubscriptionPlan;
   label: string;
   price: string;
+  badge: string;
+  accessLevel: string;
   tagline: string;
   description: string;
-  coverageKm: number;
+  highlights: string[];
   features: string[];
+  activeSummary: string;
 }> = [
   {
     value: "monthly",
     label: "Monthly",
     price: "PHP 149",
-    tagline: "Flexible monthly access",
-    description: "Best for occasional motorists who want premium photo upload and priority support.",
-    coverageKm: 5,
+    badge: "Starter",
+    accessLevel: "Premium",
+    tagline: "Smart starter protection",
+    description: "Best for occasional motorists who want better trip documentation, priority handling, and lower service commission.",
+    highlights: ["5% commission", "Photo triage", "Priority queue"],
     features: [
-      "Responder search coverage up to 5 km",
-      "Photo upload for faster issue assessment",
-      "Priority support handling",
-      "Manual payment verification by admin",
+      "Lower 5% Soteria service commission",
+      "Photo-based issue reports for faster assessment",
+      "Priority matching when several motorists request help",
+      "Digital payment receipts for every completed service",
     ],
+    activeSummary: "Your monthly premium access is active for priority handling, lower commission, and better service records.",
   },
   {
     value: "six_months",
     label: "6 Months",
     price: "PHP 699",
-    tagline: "Balanced long-term value",
-    description: "Balanced option for regular drivers who want longer premium access at a lower rate.",
-    coverageKm: 10,
+    badge: "Most practical",
+    accessLevel: "Enhanced",
+    tagline: "Commuter confidence plan",
+    description: "Built to make regular drivers feel protected every week, with stronger service access, smarter reminders, and better proof after every roadside event.",
+    highlights: ["6-month protection", "Trip-ready care", "Stronger records"],
     features: [
-      "Responder search coverage up to 10 km",
-      "Photo upload and priority support",
-      "Lower cost across extended coverage period",
-      "Ideal for regular commuters and fleets",
+      "Everything in Monthly, active for six months",
+      "Enhanced priority matching for commute, school, and work trips",
+      "Preventive safety check reminders before long drives and busy travel weeks",
+      "Extended service history with photos, receipts, and responder notes for claims or resale proof",
+      "Follow-up support after completed roadside jobs so motorists know what to monitor next",
+      "Better value than paying monthly for six straight months",
     ],
+    activeSummary: "Your 6 Months plan unlocks enhanced commuter protection with trip reminders, stronger service records, and follow-up support.",
   },
   {
     value: "annual",
     label: "Annual",
     price: "PHP 1,299",
-    tagline: "Maximum yearly coverage",
-    description: "Best value for year-round roadside coverage and premium reporting access.",
-    coverageKm: 20,
+    badge: "Strongest",
+    accessLevel: "Elite",
+    tagline: "Maximum road assurance",
+    description: "The strongest Soteria protection for motorists who want the highest confidence, longest coverage, and the most complete roadside support experience.",
+    highlights: ["Full-year shield", "Highest priority", "Complete archive"],
     features: [
-      "Responder search coverage up to 20 km",
-      "Best value for year-round assistance",
-      "Photo upload and premium support access",
-      "Recommended for high-dependability usage",
+      "Everything in 6 Months, active for a full year",
+      "Top-tier priority handling during high-demand roadside periods",
+      "Complete annual incident archive with photos, payment proof, and service timelines",
+      "Year-round vehicle care reminders for seasonal checks, battery health, tires, and emergency readiness",
+      "Strongest savings for families, commuters, delivery riders, and frequent travelers",
+      "Best plan for motorists who need dependable protection without renewing every few months",
     ],
+    activeSummary: "Your Annual plan is the strongest access level, with top priority, full-year care reminders, and the most complete service archive.",
   },
 ];
 
@@ -306,17 +338,6 @@ function formatSubscriptionPlanLabel(plan: SubscriptionPlan | null) {
   if (plan === "annual") return "Annual";
   if (plan === "monthly") return "Monthly";
   return "Free";
-}
-
-function getMotoristAgentSearchRadiusKm(subscriptionStatus: "active" | "inactive", plan: SubscriptionPlan | null) {
-  if (subscriptionStatus !== "active") {
-    return 1;
-  }
-
-  if (plan === "monthly") return 5;
-  if (plan === "six_months") return 10;
-  if (plan === "annual") return 20;
-  return 5;
 }
 
 function parseCurrencyAmount(value: string): number {
@@ -450,8 +471,10 @@ export default function App() {
   const [motoristSubscriptionStatus, setMotoristSubscriptionStatus] = useState<"active" | "inactive">("inactive");
   const [motoristSubscriptionPlan, setMotoristSubscriptionPlan] = useState<SubscriptionPlan | null>(null);
   const [motoristSubscriptionExpiresAt, setMotoristSubscriptionExpiresAt] = useState<string | null>(null);
+  const [soteriaCreditBalance, setSoteriaCreditBalance] = useState(0);
+  const [creditTopUpSubmitting, setCreditTopUpSubmitting] = useState(false);
   const [selectedSubscriptionOffer, setSelectedSubscriptionOffer] = useState<SubscriptionPlan>("monthly");
-  const [subscriptionReferenceNote, setSubscriptionReferenceNote] = useState("");
+  const [subscriptionPaymentMethod, setSubscriptionPaymentMethod] = useState<"soteria_credits" | "online_payment">("soteria_credits");
   const [subscriptionPaymentSubmitting, setSubscriptionPaymentSubmitting] = useState(false);
   const [latestSubscriptionPayment, setLatestSubscriptionPayment] = useState<SubscriptionPayment | null>(null);
   const [agentName, setAgentName] = useState("Responder");
@@ -504,7 +527,6 @@ export default function App() {
   const [agentGcashNumber, setAgentGcashNumber] = useState("");
   const [agentPayoutNotes, setAgentPayoutNotes] = useState("");
   const [agentPaymentSaving, setAgentPaymentSaving] = useState(false);
-  const [agentBalanceProofUploading, setAgentBalanceProofUploading] = useState(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     motoristSubscription: true,
     motoristHistory: false,
@@ -516,7 +538,10 @@ export default function App() {
     communityCoinRules: false,
   });
 
-  const filteredShops = useMemo(() => (shopFilter === "all" ? shopData : shopData.filter((s) => s.category === shopFilter)), [shopData, shopFilter]);
+  const filteredShops = useMemo(
+    () => (shopFilter === "all" ? shopData : shopData.filter((shop) => shopOffersCategory(shop, shopFilter))),
+    [shopData, shopFilter],
+  );
   const selectedShop = filteredShops.find((s) => s.id === selectedShopId) ?? filteredShops[0];
   const activeRequest = activeRequestId ? requests.find((r) => r.id === activeRequestId) ?? null : null;
   const activeDispatch = activeDispatchId ? agentDispatches.find((d) => d.id === activeDispatchId) ?? null : null;
@@ -529,9 +554,9 @@ export default function App() {
     () => subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer) ?? subscriptionOffers[0],
     [selectedSubscriptionOffer],
   );
-  const motoristAgentSearchRadiusKm = useMemo(
-    () => getMotoristAgentSearchRadiusKm(motoristSubscriptionStatus, motoristSubscriptionPlan),
-    [motoristSubscriptionPlan, motoristSubscriptionStatus],
+  const activeSubscriptionOfferDetails = useMemo(
+    () => subscriptionOffers.find((offer) => offer.value === motoristSubscriptionPlan) ?? null,
+    [motoristSubscriptionPlan],
   );
   const activeMotoristLocation = useMemo(
     () =>
@@ -598,7 +623,7 @@ export default function App() {
           return;
         }
         setShopData(data.map(mapDbShop));
-        setBackendMessage("Connected to PostgreSQL-backed repair shop data.");
+        setBackendMessage("Connected to Firebase-backed repair shop data.");
       } catch {
         if (!active) {
           return;
@@ -643,6 +668,18 @@ export default function App() {
       }
     };
 
+    const loadMotoristCredits = async () => {
+      if (!userId || screen !== "user-app") return;
+      try {
+        const wallet = await fetchSoteriaCredits(userId);
+        if (active) {
+          setSoteriaCreditBalance(wallet.balance);
+        }
+      } catch (error) {
+        console.warn("Failed to load Soteria Credits:", error);
+      }
+    };
+
     const loadAgentPaymentProfile = async () => {
       if (!agentId || screen !== "agent-app") return;
       try {
@@ -666,16 +703,19 @@ export default function App() {
     }
     if (screen === "user-app") {
       void loadMotoristHistory();
+      void loadMotoristCredits();
     }
 
     const interval = screen === "agent-app"
       ? setInterval(() => {
           void loadAgentDispatches();
           void loadAgentHistory();
+          void loadAgentPaymentProfile();
         }, 10000)
       : screen === "user-app"
         ? setInterval(() => {
             void loadMotoristHistory();
+            void loadMotoristCredits();
           }, 10000)
       : null;
 
@@ -922,10 +962,10 @@ export default function App() {
         setAvailability(false);
         if (availability) {
           Alert.alert(
-            "Wallet readiness required",
+            "Could not go online",
             error instanceof Error
               ? error.message
-              : "A valid wallet readiness verification is required before going online.",
+              : "Your online status could not be updated. Please try again.",
           );
         }
       }
@@ -989,15 +1029,17 @@ export default function App() {
         setMotoristSubscriptionStatus(result.subscriptionStatus === "active" ? "active" : "inactive");
         setMotoristSubscriptionPlan(result.subscriptionPlan ?? null);
         setMotoristSubscriptionExpiresAt(result.subscriptionExpiresAt ?? null);
+        setSoteriaCreditBalance(Number(result.soteriaCreditBalance ?? 0));
         setUserPassword("");
         setUserErrors({});
         setScreen("user-app");
         setUserTab("explore");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Login failed. Please check your credentials.";
+        const isCredentialError = message.toLowerCase().includes("invalid username or password") || message.toLowerCase().includes("credentials");
         setUserErrors({ 
-          identity: message.includes("credentials") ? "Invalid username or password." : "",
-          password: message.includes("credentials") ? "Invalid username or password." : ""
+          identity: isCredentialError ? "Invalid username or password." : message,
+          password: isCredentialError ? "Invalid username or password." : ""
         });
       } finally {
         setUserLoginLoading(false);
@@ -1026,9 +1068,10 @@ export default function App() {
         setAgentTab("requests");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Login failed. Please check your credentials.";
+        const isCredentialError = message.toLowerCase().includes("invalid username or password") || message.toLowerCase().includes("credentials");
         setAgentErrors({
-          identity: message.includes("credentials") ? "Invalid username or password." : "",
-          password: message.includes("credentials") ? "Invalid username or password." : ""
+          identity: isCredentialError ? "Invalid username or password." : message,
+          password: isCredentialError ? "Invalid username or password." : ""
         });
       } finally {
         setAgentLoginLoading(false);
@@ -1063,9 +1106,10 @@ export default function App() {
         setScreen("community-app");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Login failed. Please check your credentials.";
+        const isCredentialError = message.toLowerCase().includes("invalid username or password") || message.toLowerCase().includes("credentials");
         setCommunityErrors({
-          identity: message.includes("credentials") ? "Invalid username or password." : "",
-          password: message.includes("credentials") ? "Invalid username or password." : "",
+          identity: isCredentialError ? "Invalid username or password." : message,
+          password: isCredentialError ? "Invalid username or password." : "",
         });
       } finally {
         setCommunityLoginLoading(false);
@@ -1095,7 +1139,7 @@ export default function App() {
       setAgentGcashName(profile.gcashName);
       setAgentGcashNumber(profile.gcashNumber);
       setAgentPayoutNotes(profile.payoutNotes);
-      Alert.alert("Payment details saved", "Your GCash payout details were saved for admin settlement.");
+      Alert.alert("Payout details saved", "Your responder wallet details were saved for automated Soteria transfers.");
     } catch (error) {
       Alert.alert(
         "Save failed",
@@ -1103,53 +1147,6 @@ export default function App() {
       );
     } finally {
       setAgentPaymentSaving(false);
-    }
-  };
-
-  const submitAgentBalanceProof = async () => {
-    if (!agentId) {
-      Alert.alert("Responder missing", "Please log in again to upload your GCash balance proof.");
-      return;
-    }
-
-    try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert("Permission needed", "Allow photo access to upload your GCash balance screenshot.");
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 0.8,
-        allowsMultipleSelection: false,
-      });
-
-      if (result.canceled || !result.assets[0]) {
-        return;
-      }
-
-      setAgentBalanceProofUploading(true);
-      const asset = result.assets[0];
-      const payload = await toCredentialPayload({
-        name: asset.fileName ?? `gcash-balance-${Date.now()}.jpg`,
-        uri: asset.uri,
-        mimeType: asset.mimeType ?? "image/jpeg",
-      });
-      const profile = await uploadAgentBalanceProof(agentId, payload);
-      setAgentPaymentProfile(profile);
-      setAvailability(false);
-      Alert.alert(
-        "Proof uploaded",
-        "Your wallet readiness proof was sent to admin for tier review. You can go online after approval.",
-      );
-    } catch (error) {
-      Alert.alert(
-        "Upload failed",
-        error instanceof Error ? error.message : "Could not upload your GCash balance proof.",
-      );
-    } finally {
-      setAgentBalanceProofUploading(false);
     }
   };
 
@@ -1180,14 +1177,16 @@ export default function App() {
           password: registerForm.password,
         });
         setUserId(result.id);
-        setBackendMessage("User profile saved to PostgreSQL.");
+        setBackendMessage("User profile saved to backend.");
         setMotoristSubscriptionStatus("inactive");
         setMotoristSubscriptionPlan(null);
         setMotoristSubscriptionExpiresAt(null);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not save user profile.";
-        setBackendMessage(`User registration fallback active: ${message}`);
+        setRegisterError(message);
+        setBackendMessage(`User registration failed: ${message}`);
         Alert.alert("Registration not saved", message);
+        return;
       }
 
       setUserIdentity(registerForm.username);
@@ -1233,11 +1232,13 @@ export default function App() {
           communityLifetimeCoins: 0,
           lastCommunityRewardAt: null,
         });
-        setBackendMessage("Community profile saved to PostgreSQL.");
+        setBackendMessage("Community profile saved to backend.");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not save community profile.";
-        setBackendMessage(`Community registration fallback active: ${message}`);
+        setRegisterError(message);
+        setBackendMessage(`Community registration failed: ${message}`);
         Alert.alert("Registration not saved", message);
+        return;
       }
 
       setCommunityIdentity(registerForm.username);
@@ -1354,13 +1355,14 @@ export default function App() {
           rating: 4.5,
           distanceKm: agent.distanceKm,
           services: agent.services || [],
+          cashAssistReady: Boolean(agent.cashAssistReady),
         };
         setMatchedAgent(matchedAgentData);
         setFindingAgent(false);
         return;
       }
 
-      setAgentSearchError(`No available rescue responders found within your ${motoristAgentSearchRadiusKm} km access range. Upgrade your subscription for wider responder coverage.`);
+      setAgentSearchError("No available rescue responders were found nearby right now. Try again in a moment or adjust your pinned location.");
     } catch (error) {
       console.warn("Failed to find real responders:", error);
       setAgentSearchError("Unable to reach the backend. Please check your connection and try again.");
@@ -1511,7 +1513,7 @@ export default function App() {
         const dispatchDetails = await fetchDispatchDetails(result.dispatchId);
         setLiveDispatchId(result.dispatchId);
         setLiveDispatchDetails(dispatchDetails);
-        setBackendMessage("Emergency report and dispatch saved to PostgreSQL.");
+        setBackendMessage("Emergency report and dispatch saved to Firebase.");
 
         if (dispatchDetails.agent?.currentLatitude && dispatchDetails.agent?.currentLongitude) {
           setAgentLocation({ latitude: dispatchDetails.agent.currentLatitude, longitude: dispatchDetails.agent.currentLongitude });
@@ -1553,7 +1555,7 @@ export default function App() {
       const currentUserLocation = await captureCurrentUserLocation();
       const nearbyAgents = await findNearbyAgents(currentUserLocation.latitude, currentUserLocation.longitude, serviceType, userId);
       if (!nearbyAgents || nearbyAgents.length === 0) {
-        setAgentSearchError(`No additional rescue responders are available within your ${motoristAgentSearchRadiusKm} km access range right now.`);
+        setAgentSearchError("No additional rescue responders are available near your pinned location right now.");
         return;
       }
 
@@ -1569,6 +1571,7 @@ export default function App() {
         rating: 4.5,
         distanceKm: nextAgent.distanceKm,
         services: nextAgent.services || [],
+        cashAssistReady: Boolean(nextAgent.cashAssistReady),
       });
     } catch (error) {
       console.warn("Failed to refresh nearby responders:", error);
@@ -1689,7 +1692,7 @@ export default function App() {
 
   const submitSubscriptionPayment = async () => {
     if (!userId) {
-      Alert.alert("Login required", "Please log in as a motorist before sending a payment notice.");
+      Alert.alert("Login required", "Please log in as a motorist before paying with Soteria Credits.");
       return;
     }
 
@@ -1698,22 +1701,73 @@ export default function App() {
       const payment = await createSubscriptionPayment({
         userId,
         subscriptionPlan: selectedSubscriptionOffer,
-        referenceNote: subscriptionReferenceNote.trim(),
+        paymentMethod: subscriptionPaymentMethod,
       });
 
       setLatestSubscriptionPayment(payment);
-      setSubscriptionReferenceNote("");
+      if (payment.paymentUrl) {
+        await Linking.openURL(payment.paymentUrl);
+        Alert.alert(
+          "Payment page opened",
+          "Complete the online payment page. Your subscription will activate automatically after PayMongo confirms payment.",
+        );
+        return;
+      }
+      setMotoristSubscriptionStatus("active");
+      setMotoristSubscriptionPlan(payment.subscriptionPlan ?? selectedSubscriptionOffer);
+      setMotoristSubscriptionExpiresAt(null);
+      if (typeof payment.creditBalance === "number") {
+        setSoteriaCreditBalance(payment.creditBalance);
+      }
       Alert.alert(
-        "Payment notice sent",
-        "Your selected subscription payment has been sent to admin for manual confirmation.",
+        "Subscription activated",
+        subscriptionPaymentMethod === "online_payment"
+          ? "Your online payment is being processed."
+          : "Soteria deducted your credits and activated your plan automatically.",
       );
     } catch (error) {
       Alert.alert(
-        "Payment notice failed",
-        error instanceof Error ? error.message : "Could not send your payment notice.",
+        subscriptionPaymentMethod === "online_payment" ? "Online payment failed" : "Credits payment failed",
+        error instanceof Error
+          ? error.message
+          : subscriptionPaymentMethod === "online_payment"
+            ? "Could not create the online subscription payment link."
+            : "Could not process your subscription credits payment.",
       );
     } finally {
       setSubscriptionPaymentSubmitting(false);
+    }
+  };
+
+  const topUpCredits = async (amount: number) => {
+    if (!userId) {
+      Alert.alert("Login required", "Please log in as a motorist before topping up Soteria Credits.");
+      return;
+    }
+
+    try {
+      setCreditTopUpSubmitting(true);
+      const result = await topUpSoteriaCredits(userId, amount);
+      if (result.paymentUrl) {
+        await Linking.openURL(result.paymentUrl);
+        Alert.alert(
+          "Payment page opened",
+          "Complete the PayMongo payment page. Your Soteria Credits will update automatically after the payment provider confirms the transaction.",
+        );
+      } else {
+        setSoteriaCreditBalance(result.balance);
+        Alert.alert(
+          "Top-up successful",
+          `PHP ${result.amount} was added to your Soteria Credits. Current balance: PHP ${result.balance}.`,
+        );
+      }
+    } catch (error) {
+      Alert.alert(
+        "Top-up failed",
+        error instanceof Error ? error.message : "Could not process your Soteria Credits top-up.",
+      );
+    } finally {
+      setCreditTopUpSubmitting(false);
     }
   };
 
@@ -1743,7 +1797,7 @@ export default function App() {
       setCommunityRedemptions((current) => [result.redemption, ...current]);
       setCommunityGcashName("");
       setCommunityGcashNumber("");
-      Alert.alert("Ticket submitted", "Your reward ticket was sent to admin for manual GCash payout review.");
+      Alert.alert("Ticket submitted", "Your reward ticket was queued for Soteria payout processing.");
     } catch (error) {
       Alert.alert(
         "Redemption failed",
@@ -1834,11 +1888,13 @@ export default function App() {
             ).filter((entry): entry is [string, CredentialFilePayload] => entry[1] !== null),
           ),
         });
-        setBackendMessage("Responder application saved to PostgreSQL.");
+        setBackendMessage("Responder application saved to backend.");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Could not save responder application.";
-        setBackendMessage(`Responder application fallback active: ${message}`);
+        setAgentRegisterError(message);
+        setBackendMessage(`Responder application failed: ${message}`);
         Alert.alert("Application not saved", message);
+        return;
       }
 
       Alert.alert("Application submitted", "Admin will review your credentials and notify you once approved.");
@@ -1942,7 +1998,10 @@ export default function App() {
                 setRequests((current) => current.filter((item) => item.id !== activeRequest.id));
               }
 
-              Alert.alert("Job completed", "Payment reminder sent to the motorist.");
+              Alert.alert(
+                "Payment requested",
+                "The service amount was sent to the motorist. They can now pay with Soteria Credits or PayMongo.",
+              );
 
               if (completedId && agentId) {
                 (async () => {
@@ -1954,6 +2013,12 @@ export default function App() {
                     setAgentHistory(refreshedHistory);
                   } catch (error) {
                     console.warn("Failed to complete job on backend:", error);
+                    Alert.alert(
+                      "Could not request payment",
+                      error instanceof Error
+                        ? error.message
+                        : "Ask the motorist to stay on the tracking screen and try again.",
+                    );
                   }
                 })();
               }
@@ -2026,7 +2091,7 @@ export default function App() {
               <View style={styles.heroContent}>
                 <View style={styles.heroTopRow}>
                   <View style={styles.heroBadge}>
-                    <Text style={styles.eyebrow}>KalsadaKonek</Text>
+                    <Text style={styles.eyebrow}>Soteria</Text>
                   </View>
                   <View style={styles.heroTrustBadge}>
                     <Text style={styles.heroTrustText}>Enterprise mobility suite</Text>
@@ -2308,7 +2373,7 @@ export default function App() {
                     {agentRegisterForm.liabilityAcknowledged ? "Liability declaration acknowledged" : "Acknowledge liability declaration"}
                   </Text>
                   <Text style={styles.text}>
-                    I confirm that if I upload an old or false GCash balance proof, the organization or group I belong to may be held liable by KalsadaKonek.
+                    I confirm that I will provide accurate responder credentials and payout details for Soteria automated service transfers.
                   </Text>
                 </Pressable>
                 {agentRegisterError ? <Text style={styles.error}>{agentRegisterError}</Text> : null}
@@ -2356,11 +2421,11 @@ export default function App() {
 
             {userTab === "subscription" && (
             <ExpandableCard
-              title="Motorist Subscription"
+              title="Soteria Credits & Subscription"
               subtitle={
                 motoristSubscriptionStatus === "active"
-                  ? `Subscription active on the ${formatSubscriptionPlanLabel(motoristSubscriptionPlan)} offer. Photo upload and priority support are unlocked. Responder coverage radius: ${motoristAgentSearchRadiusKm} km based on your current subscription tier.`
-                  : `Free plan active. Choose Monthly, 6 Months, or Annual to unlock image upload and priority support. Responder coverage radius: ${motoristAgentSearchRadiusKm} km on the free plan. Paid plans unlock wider responder search coverage.`
+                  ? `Subscription active on the ${formatSubscriptionPlanLabel(motoristSubscriptionPlan)} offer. Priority handling, lower commission, and premium service records are unlocked.`
+                  : "Top up Soteria Credits, then choose a plan for lower commission, priority handling, and richer service documentation."
               }
               expanded={Boolean(expandedSections.motoristSubscription)}
               onToggle={() => toggleSection("motoristSubscription")}
@@ -2375,6 +2440,30 @@ export default function App() {
                 />
               }
             >
+              <View style={styles.subscriptionCard}>
+                <View style={styles.between}>
+                  <View style={styles.flex}>
+                    <Text style={styles.label}>Soteria Credits balance</Text>
+                    <Text style={styles.valueBig}>{formatCurrencyAmount(soteriaCreditBalance)}</Text>
+                    <Text style={styles.text}>Credits can be used for subscription plans and roadside service payments.</Text>
+                  </View>
+                  <Pill label="In-app currency" active />
+                </View>
+                <View style={styles.rowWrap}>
+                  {[100, 300, 500, 1000].map((amount) => (
+                    <Pressable
+                      key={amount}
+                      style={[styles.secondary, creditTopUpSubmitting && styles.buttonDisabled]}
+                      onPress={() => void topUpCredits(amount)}
+                      disabled={creditTopUpSubmitting}
+                    >
+                      <Text style={styles.secondaryText}>
+                        {creditTopUpSubmitting ? "Processing..." : `Top up PHP ${amount}`}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
               <View style={styles.subscriptionOverviewGrid}>
                 <View style={styles.subscriptionOverviewCard}>
                   <Text style={styles.subscriptionOverviewLabel}>Current plan</Text>
@@ -2383,17 +2472,19 @@ export default function App() {
                       ? formatSubscriptionPlanLabel(motoristSubscriptionPlan)
                       : "Free"}
                   </Text>
-                  <Text style={styles.text}>Responder reach: {motoristAgentSearchRadiusKm} km</Text>
+                  <Text style={styles.text}>Responder access: wide-range matching for all motorists</Text>
                 </View>
                 <View style={styles.subscriptionOverviewCard}>
                   <Text style={styles.subscriptionOverviewLabel}>Access level</Text>
                   <Text style={styles.subscriptionOverviewValue}>
-                    {motoristSubscriptionStatus === "active" ? "Premium" : "Basic"}
+                    {motoristSubscriptionStatus === "active"
+                      ? activeSubscriptionOfferDetails?.accessLevel ?? "Premium"
+                      : "Basic"}
                   </Text>
                   <Text style={styles.text}>
                     {motoristSubscriptionStatus === "active"
-                      ? "Priority assistance and photo upload are enabled."
-                      : "Upgrade for wider search coverage and richer triage tools."}
+                      ? activeSubscriptionOfferDetails?.activeSummary ?? "Priority assistance, photo reports, and lower commission are enabled."
+                      : "Upgrade for lower commission, priority support, and richer triage records."}
                   </Text>
                 </View>
               </View>
@@ -2418,7 +2509,12 @@ export default function App() {
                       >
                         <View style={styles.between}>
                           <View style={styles.flex}>
-                            <Text style={styles.subscriptionPlanTitle}>{offer.label}</Text>
+                            <View style={styles.subscriptionTitleRow}>
+                              <Text style={styles.subscriptionPlanTitle}>{offer.label}</Text>
+                              <View style={styles.subscriptionPlanBadge}>
+                                <Text style={styles.subscriptionPlanBadgeText}>{offer.badge}</Text>
+                              </View>
+                            </View>
                             <Text style={styles.subscriptionPlanTagline}>{offer.tagline}</Text>
                           </View>
                           <View style={styles.subscriptionPlanPriceWrap}>
@@ -2428,9 +2524,13 @@ export default function App() {
                         </View>
                         <Text style={styles.text}>{offer.description}</Text>
                         <View style={styles.rowWrap}>
-                          <Pill label={`${offer.coverageKm} km coverage`} active={selectedSubscriptionOffer === offer.value} />
-                          <Pill label="Photo upload" />
-                          <Pill label="Priority support" />
+                          {offer.highlights.map((highlight) => (
+                            <Pill
+                              key={`${offer.value}-${highlight}`}
+                              label={highlight}
+                              active={selectedSubscriptionOffer === offer.value}
+                            />
+                          ))}
                         </View>
                         <View style={styles.subscriptionFeatureList}>
                           {offer.features.map((feature) => (
@@ -2443,47 +2543,48 @@ export default function App() {
                       </Pressable>
                     ))}
                   </View>
-                  <Image
-                    source={{
-                      uri: `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(`KalsadaKonek Motorist Subscription - ${selectedSubscriptionOffer}`)}`,
-                    }}
-                    style={styles.subscriptionQr}
-                  />
                   <View style={styles.flex}>
                     <Text style={styles.label}>
-                      {subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer)?.label} plan
+                      {selectedSubscriptionOfferDetails.label} plan
                     </Text>
+                    <Text style={styles.text}>{selectedSubscriptionOfferDetails.description}</Text>
                     <Text style={styles.text}>
-                      {subscriptionOffers.find((offer) => offer.value === selectedSubscriptionOffer)?.description}
+                      Pay using Soteria Credits or direct online payment. Both methods activate automatically after confirmation.
                     </Text>
-                    <Text style={styles.text}>
-                      Pay via QR and wait for admin activation after manual payment verification.
-                    </Text>
-                    <Text style={styles.label}>Reference note</Text>
-                    <TextInput
-                      value={subscriptionReferenceNote}
-                      onChangeText={setSubscriptionReferenceNote}
-                      placeholder="Optional GCash name, time sent, or reference number"
-                      placeholderTextColor="#94a3b8"
-                      style={styles.input}
-                    />
+                    <Text style={styles.label}>Payment method</Text>
+                    <View style={styles.rowWrap}>
+                      <Chip
+                        label="Use Credits"
+                        active={subscriptionPaymentMethod === "soteria_credits"}
+                        onPress={() => setSubscriptionPaymentMethod("soteria_credits")}
+                      />
+                      <Chip
+                        label="Pay Online"
+                        active={subscriptionPaymentMethod === "online_payment"}
+                        onPress={() => setSubscriptionPaymentMethod("online_payment")}
+                      />
+                    </View>
                     <Pressable
                       style={[styles.primary, subscriptionPaymentSubmitting && styles.buttonDisabled]}
                       onPress={() => void submitSubscriptionPayment()}
                       disabled={subscriptionPaymentSubmitting}
                     >
                       <Text style={styles.primaryText}>
-                        {subscriptionPaymentSubmitting ? "Sending..." : "I paid this plan"}
+                        {subscriptionPaymentSubmitting
+                          ? "Processing..."
+                          : subscriptionPaymentMethod === "online_payment"
+                            ? "Pay online and activate"
+                            : "Pay with credits and activate"}
                       </Text>
                     </Pressable>
                     {latestSubscriptionPayment ? (
                       <View style={styles.subscriptionStatusCard}>
-                        <Text style={styles.label}>Latest payment notice</Text>
+                        <Text style={styles.label}>Latest credits payment</Text>
                         <Text style={styles.text}>
                           {formatSubscriptionPlanLabel(latestSubscriptionPayment.subscriptionPlan)} - PHP {latestSubscriptionPayment.amount}
                         </Text>
                         <Text style={styles.text}>
-                          Status: {latestSubscriptionPayment.status}
+                          Status: {latestSubscriptionPayment.status === "confirmed" ? "Credits deducted and activated" : latestSubscriptionPayment.status}
                         </Text>
                       </View>
                     ) : null}
@@ -2491,25 +2592,49 @@ export default function App() {
                 </View>
               ) : (
                 <View style={styles.subscriptionCard}>
-                  <Text style={styles.label}>Active plan</Text>
-                  <Text style={styles.valueBig}>{formatSubscriptionPlanLabel(motoristSubscriptionPlan)}</Text>
-                  <Text style={styles.text}>
-                    Expiry: {motoristSubscriptionExpiresAt ? formatForumTimestamp(motoristSubscriptionExpiresAt) : "Not available"}
-                  </Text>
-                  <View style={styles.subscriptionFeatureList}>
-                    <View style={styles.subscriptionFeatureItem}>
-                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
-                      <Text style={styles.text}>Responder search coverage up to {motoristAgentSearchRadiusKm} km</Text>
+                  <View style={styles.subscriptionCardHeader}>
+                    <View style={styles.flex}>
+                      <Text style={styles.label}>Active plan</Text>
+                      <Text style={styles.valueBig}>{formatSubscriptionPlanLabel(motoristSubscriptionPlan)}</Text>
+                      <Text style={styles.text}>
+                        Expiry: {motoristSubscriptionExpiresAt ? formatForumTimestamp(motoristSubscriptionExpiresAt) : "Not available"}
+                      </Text>
                     </View>
-                    <View style={styles.subscriptionFeatureItem}>
-                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
-                      <Text style={styles.text}>Photo upload available during symptom triage</Text>
-                    </View>
-                    <View style={styles.subscriptionFeatureItem}>
-                      <Text style={styles.subscriptionFeatureBullet}>-</Text>
-                      <Text style={styles.text}>Priority support routing remains enabled while active</Text>
-                    </View>
+                    {activeSubscriptionOfferDetails ? (
+                      <View style={styles.subscriptionPriceBadge}>
+                        <Text style={styles.subscriptionPriceBadgeText}>{activeSubscriptionOfferDetails.accessLevel}</Text>
+                      </View>
+                    ) : null}
                   </View>
+                  {activeSubscriptionOfferDetails ? (
+                    <>
+                      <Text style={styles.text}>{activeSubscriptionOfferDetails.activeSummary}</Text>
+                      <View style={styles.rowWrap}>
+                        {activeSubscriptionOfferDetails.highlights.map((highlight) => (
+                          <Pill key={`active-${highlight}`} label={highlight} active />
+                        ))}
+                      </View>
+                      <View style={styles.subscriptionFeatureList}>
+                        {activeSubscriptionOfferDetails.features.map((feature) => (
+                          <View key={`active-${feature}`} style={styles.subscriptionFeatureItem}>
+                            <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                            <Text style={styles.text}>{feature}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    </>
+                  ) : (
+                    <View style={styles.subscriptionFeatureList}>
+                      <View style={styles.subscriptionFeatureItem}>
+                        <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                        <Text style={styles.text}>Wide-range responder matching remains available</Text>
+                      </View>
+                      <View style={styles.subscriptionFeatureItem}>
+                        <Text style={styles.subscriptionFeatureBullet}>-</Text>
+                        <Text style={styles.text}>Priority support routing remains enabled while active</Text>
+                      </View>
+                    </View>
+                  )}
                 </View>
               )}
             </ExpandableCard>
@@ -2539,10 +2664,28 @@ export default function App() {
                     <Text style={styles.text}>Completed bookings with submitted feedback will appear here.</Text>
                   )}
                 </ExpandableCard>
-                <MapCard title="Nearby repair shops" subtitle={`${filteredShops.length} shops near your location`} center={userLocation}>
-                  <Marker coordinate={userLocation} title="You" pinColor="#fb923c" />
-                  {filteredShops.map((shop) => <Marker key={shop.id} coordinate={shop.coord} title={shop.name} description={shop.address} pinColor={shop.id === selectedShop?.id ? "#fb923c" : "#38bdf8"} onPress={() => setSelectedShopId(shop.id)} />)}
-                </MapCard>
+                <MapCard
+                  title="Nearby repair shops"
+                  subtitle={`${filteredShops.length} shops near your location`}
+                  center={userLocation}
+                  markers={[
+                    {
+                      id: "you",
+                      latitude: userLocation.latitude,
+                      longitude: userLocation.longitude,
+                      title: "You",
+                      color: "#fb923c",
+                    },
+                    ...filteredShops.map((shop) => ({
+                      id: shop.id,
+                      latitude: shop.coord.latitude,
+                      longitude: shop.coord.longitude,
+                      title: shop.name,
+                      description: shop.address,
+                      color: shop.id === selectedShop?.id ? "#fb923c" : "#38bdf8",
+                    })),
+                  ]}
+                />
                 <View style={styles.rowWrap}>
                   <Chip label="All" active={shopFilter === "all"} onPress={() => setShopFilter("all")} />
                   {categories.map(([value, label]) => <Chip key={value} label={label} active={shopFilter === value} onPress={() => setShopFilter(value)} />)}
@@ -2586,9 +2729,18 @@ export default function App() {
                 <View style={styles.inlineBack}>
                   <Pressable style={styles.secondary} onPress={() => setUserTab("explore")}><Text style={styles.secondaryText}>Back to explore</Text></Pressable>
                 </View>
-                <MapCard title="Emergency reporting" subtitle="Pin your location and choose the help you need" center={userLocation}>
-                  <Marker coordinate={userLocation} title="Pinned location" pinColor="#fb923c" />
-                </MapCard>
+                <MapCard
+                  title="Emergency reporting"
+                  subtitle="Pin your location and choose the help you need"
+                  center={userLocation}
+                  markers={[{
+                    id: "pinned-location",
+                    latitude: userLocation.latitude,
+                    longitude: userLocation.longitude,
+                    title: "Pinned location",
+                    color: "#fb923c",
+                  }]}
+                />
                 <View style={styles.card}>
                   <View style={styles.between}>
                     <View style={styles.flex}>
@@ -2795,9 +2947,18 @@ export default function App() {
                 </View>
                 {agentId ? (
                   <>
-                    <MapCard title="Your location" subtitle="Auto-detect your current GPS location" center={agentLocation}>
-                      <Marker coordinate={agentLocation} title="Your location" pinColor="#22c55e" />
-                    </MapCard>
+                    <MapCard
+                      title="Your location"
+                      subtitle="Auto-detect your current GPS location"
+                      center={agentLocation}
+                      markers={[{
+                        id: "agent-location",
+                        latitude: agentLocation.latitude,
+                        longitude: agentLocation.longitude,
+                        title: "Your location",
+                        color: "#22c55e",
+                      }]}
+                    />
                     <View style={styles.card}>
                       <View style={styles.between}>
                         <View style={styles.flex}>
@@ -2870,10 +3031,28 @@ export default function App() {
                   <View style={styles.inlineBack}>
                     <Pressable style={styles.secondary} onPress={() => setAgentTab("requests")}><Text style={styles.secondaryText}>Back to requests</Text></Pressable>
                   </View>
-                  <MapCard title="Navigation" subtitle={`${activeAgentRequest.motorist?.fullName || activeAgentRequest.motorist} - Navigate to location`} center={navigationMapCenter} route={route} showRoute={true}>
-                    <Marker coordinate={activeMotoristLocation} title="Motorist" pinColor="#fb923c" />
-                    <Marker coordinate={agentLocation} title="Responder" pinColor="#22c55e" />
-                  </MapCard>
+                  <MapCard
+                    title="Navigation"
+                    subtitle={`${activeAgentRequest.motorist?.fullName || activeAgentRequest.motorist} - Navigate to location`}
+                    center={navigationMapCenter}
+                    route={route}
+                    markers={[
+                      {
+                        id: "motorist",
+                        latitude: activeMotoristLocation.latitude,
+                        longitude: activeMotoristLocation.longitude,
+                        title: "Motorist",
+                        color: "#fb923c",
+                      },
+                      {
+                        id: "responder",
+                        latitude: agentLocation.latitude,
+                        longitude: agentLocation.longitude,
+                        title: "Responder",
+                        color: "#22c55e",
+                      },
+                    ]}
+                  />
                   <View style={styles.double}>
                     <Mini title="Distance" value={`${navigationDistance.toFixed(1)} km`} />
                     <Mini title="ETA" value={`${Math.ceil(navigationETA)} min`} accent="#fb923c" />
@@ -2898,6 +3077,7 @@ export default function App() {
                         <Text style={styles.secondaryText}>{editingFee ? "Save fee" : "Edit fee"}</Text>
                       </Pressable>
                     </View>
+                    <Text style={styles.text}>The motorist will choose Soteria Credits or PayMongo after you request payment.</Text>
                     <Tabs active={navStatus} setActive={setNavStatus} labels={{ "en-route": "En route", arrived: "Arrived", working: "Working" }} />
                     {navStatus === "working" && (
                       <Pressable style={styles.success} onPress={() => {
@@ -2919,7 +3099,10 @@ export default function App() {
                           ]);
                           setRequests((current) => current.filter((item) => item.id !== activeRequest.id));
                         }
-                        Alert.alert("Job completed", "Payment reminder sent to the motorist.");
+                        Alert.alert(
+                          "Payment requested",
+                          "The service amount was sent to the motorist. They can now pay with Soteria Credits or PayMongo.",
+                        );
 
                         // Update backend in background
                         if (completedId && agentId) {
@@ -2932,6 +3115,12 @@ export default function App() {
                               setAgentHistory(refreshedHistory);
                             } catch (error) {
                               console.warn("Failed to complete job on backend:", error);
+                              Alert.alert(
+                                "Could not request payment",
+                                error instanceof Error
+                                  ? error.message
+                                  : "Ask the motorist to stay on the tracking screen and try again.",
+                              );
                             }
                           })();
                         }
@@ -2980,7 +3169,7 @@ export default function App() {
                   expanded={Boolean(expandedSections.agentProfile)}
                   onToggle={() => toggleSection("agentProfile")}
                 >
-                  <Text style={styles.text}>Motorist payments go directly to KalsadaKonek. Admin will send your service amount to the GCash account below.</Text>
+              <Text style={styles.text}>Motorist service payments can use Soteria Credits or direct online payment. The system deducts Soteria commission and transfers the net payout to your responder wallet automatically.</Text>
                   <View style={styles.subscriptionStatusCard}>
                     <Text style={styles.label}>Responder</Text>
                     <Text style={styles.text}>{agentPaymentProfile?.fullName || agentName}</Text>
@@ -2990,57 +3179,12 @@ export default function App() {
                   </View>
                 </ExpandableCard>
                 <ExpandableCard
-                  title="Wallet Readiness Verification"
-                  subtitle="Keep the verification details collapsed until you need to update or review them."
-                  expanded={Boolean(expandedSections.agentWallet)}
-                  onToggle={() => toggleSection("agentWallet")}
-                >
-                  <Text style={styles.text}>Upload your GCash screenshot for admin review. KalsadaKonek stores only the approved readiness tier and expiry, not your displayed wallet balance.</Text>
-                  <View style={styles.subscriptionStatusCard}>
-                    <Text style={styles.label}>Current status</Text>
-                    <Text style={styles.text}>
-                      {agentPaymentProfile?.balanceProof.status === "approved"
-                        ? "Approved"
-                        : agentPaymentProfile?.balanceProof.status === "pending"
-                          ? "Pending admin review"
-                          : agentPaymentProfile?.balanceProof.status === "rejected"
-                            ? "Rejected"
-                            : "No proof submitted"}
-                    </Text>
-                    <Text style={styles.text}>
-                      Readiness tier: {agentPaymentProfile?.balanceProof.tierLabel || "Not verified"}
-                    </Text>
-                    <Text style={styles.text}>
-                      Submitted: {agentPaymentProfile?.balanceProof.submittedAt ? formatForumTimestamp(agentPaymentProfile.balanceProof.submittedAt) : "No submission yet"}
-                    </Text>
-                    <Text style={styles.text}>
-                      Valid until: {agentPaymentProfile?.balanceProof.expiresAt ? formatForumTimestamp(agentPaymentProfile.balanceProof.expiresAt) : "Needs approval"}
-                    </Text>
-                    <Text style={styles.text}>
-                      Approved by: {agentPaymentProfile?.balanceProof.approvedBy || "Awaiting admin review"}
-                    </Text>
-                    {agentPaymentProfile?.balanceProof.rejectionReason ? (
-                      <Text style={styles.text}>Rejection reason: {agentPaymentProfile.balanceProof.rejectionReason}</Text>
-                    ) : null}
-                    <Text style={styles.text}>
-                      Liability note: false or old balance proofs can make {agentPaymentProfile?.organizationName || "your organization"} liable.
-                    </Text>
-                  </View>
-                  <Pressable
-                    style={[styles.primary, agentBalanceProofUploading && styles.buttonDisabled]}
-                    onPress={() => void submitAgentBalanceProof()}
-                    disabled={agentBalanceProofUploading}
-                  >
-                    <Text style={styles.primaryText}>{agentBalanceProofUploading ? "Uploading..." : "Upload GCash readiness proof"}</Text>
-                  </Pressable>
-                </ExpandableCard>
-                <ExpandableCard
-                  title="Payment Details"
-                  subtitle="Expand this section only when you need to update payout information."
+                  title="Automated Payout Details"
+                  subtitle="Add the wallet where automated net payouts should be transferred."
                   expanded={Boolean(expandedSections.agentPayment)}
                   onToggle={() => toggleSection("agentPayment")}
                 >
-                  <Text style={styles.text}>Provide the GCash account where KalsadaKonek admin should send your exact service earnings after each completed job.</Text>
+                  <Text style={styles.text}>Provide the GCash account where Soteria should automatically transfer your net service earnings after commission deduction.</Text>
                   <Text style={styles.label}>GCash account name</Text>
                   <TextInput
                     value={agentGcashName}
@@ -3062,7 +3206,7 @@ export default function App() {
                   <TextInput
                     value={agentPayoutNotes}
                     onChangeText={setAgentPayoutNotes}
-                    placeholder="Optional notes for admin payout handling"
+                    placeholder="Optional payout routing notes"
                     placeholderTextColor="#94a3b8"
                     multiline
                     style={[styles.input, styles.multiline]}
@@ -3474,7 +3618,13 @@ function ForumPanel(props: {
   );
 }
 
-function MapCard(props: { title: string; subtitle: string; center: Coords; children: React.ReactNode; route?: Array<{ latitude: number; longitude: number }>; showRoute?: boolean }) {
+function MapCard(props: {
+  title: string;
+  subtitle: string;
+  center: Coords;
+  markers?: LeafletMarker[];
+  route?: LeafletRoutePoint[];
+}) {
   return (
     <View style={[styles.card, styles.mapCardShell]}>
       <View style={styles.between}>
@@ -3487,17 +3637,11 @@ function MapCard(props: { title: string; subtitle: string; center: Coords; child
         </View>
       </View>
       <View style={styles.map}>
-        <MapView style={StyleSheet.absoluteFill} region={{ ...props.center, latitudeDelta: 0.08, longitudeDelta: 0.08 }}>
-          {props.children}
-          {props.showRoute && props.route && props.route.length > 0 && (
-            <Polyline
-              coordinates={props.route}
-              strokeColor="#3b82f6"
-              strokeWidth={4}
-              lineDashPattern={[10, 10]}
-            />
-          )}
-        </MapView>
+        <LeafletMap
+          center={props.center}
+          markers={props.markers}
+          route={props.route}
+        />
       </View>
     </View>
   );
@@ -3673,7 +3817,10 @@ const styles = StyleSheet.create({
   subscriptionPlansStack: { gap: 12, width: "100%" },
   subscriptionPlanCard: { backgroundColor: "#0d1728", borderRadius: 20, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 14, gap: 10 },
   subscriptionPlanCardActive: { borderColor: "#f59e0b", backgroundColor: "#111c2d" },
+  subscriptionTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
   subscriptionPlanTitle: { color: "#f8fafc", fontSize: 20, fontWeight: "800" },
+  subscriptionPlanBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(34,197,94,0.28)", backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 9, paddingVertical: 5 },
+  subscriptionPlanBadgeText: { color: "#86efac", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.5 },
   subscriptionPlanTagline: { color: "#fbbf24", fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
   subscriptionPlanPriceWrap: { alignItems: "flex-end", gap: 2 },
   subscriptionPlanPrice: { color: "#f8fafc", fontSize: 18, fontWeight: "900" },
@@ -3684,6 +3831,8 @@ const styles = StyleSheet.create({
   subscriptionCardHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12, width: "100%" },
   subscriptionPriceBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", backgroundColor: "rgba(245,158,11,0.12)", paddingHorizontal: 12, paddingVertical: 7 },
   subscriptionPriceBadgeText: { color: "#fbbf24", fontSize: 12, fontWeight: "800" },
+  cashAssistBadge: { alignSelf: "flex-start", borderRadius: 999, borderWidth: 1, borderColor: "rgba(34,197,94,0.3)", backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 11, paddingVertical: 6, marginTop: 8 },
+  cashAssistBadgeText: { color: "#86efac", fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.6 },
   lockedPill: { backgroundColor: "#261d18", borderRadius: 999, borderWidth: 1, borderColor: "#fb923c", paddingHorizontal: 14, paddingVertical: 10 },
   lockedPillText: { color: "#fdba74", fontWeight: "800" },
   forumReply: { backgroundColor: "#091321", borderRadius: 16, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 12, gap: 6 },

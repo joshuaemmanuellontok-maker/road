@@ -1,5 +1,5 @@
 
-  # KalsadaKonek Crowd-Service App
+  # Soteria Crowd-Service App
 
   This repository now follows a split-platform setup:
 

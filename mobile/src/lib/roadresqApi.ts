@@ -1,4 +1,5 @@
 import { NativeModules, Platform } from "react-native";
+import Constants from "expo-constants";
 
 export type DbRepairShop = {
   id: string;
@@ -85,6 +86,12 @@ export type DispatchDetails = {
     commissionAmount: number;
     commissionRate: number;
     subscriptionStatus: SubscriptionStatus;
+    paymentStatus?: string;
+    payoutStatus?: string;
+    payoutTransferredAt?: string | null;
+    transferReference?: string | null;
+    creditBalanceAfter?: number | null;
+    paymentMethod?: string;
   } | null;
   motorist: {
     id: string;
@@ -157,6 +164,12 @@ export type DispatchHistoryEntry = {
     commissionAmount: number;
     commissionRate: number;
     subscriptionStatus: SubscriptionStatus;
+    paymentStatus?: string;
+    payoutStatus?: string;
+    payoutTransferredAt?: string | null;
+    transferReference?: string | null;
+    creditBalanceAfter?: number | null;
+    paymentMethod?: string;
   } | null;
   dispatch: DispatchDetails | null;
   viewerFeedback: DispatchFeedback | null;
@@ -215,6 +228,20 @@ export type SubscriptionPayment = {
   status: "pending" | "confirmed" | "rejected";
   submittedAt: string | null;
   reviewedAt: string | null;
+  creditBalance?: number;
+  paymentMethod?: "soteria_credits" | "online_payment";
+  paymentUrl?: string;
+  reference?: string;
+};
+
+export type SoteriaCreditTopUp = {
+  userId: string;
+  amount: number;
+  balance: number;
+  status: string;
+  provider?: string;
+  paymentUrl?: string;
+  reference?: string;
 };
 
 export type CommunityProfile = {
@@ -346,6 +373,21 @@ function mapSubscriptionPayment(payload: any): SubscriptionPayment {
       payload?.reviewedAt != null || payload?.reviewed_at != null
         ? String(payload?.reviewedAt ?? payload?.reviewed_at)
         : null,
+    creditBalance:
+      payload?.creditBalance != null || payload?.credit_balance != null
+        ? Number(payload?.creditBalance ?? payload?.credit_balance)
+        : undefined,
+    paymentMethod:
+      payload?.paymentMethod === "online_payment" || payload?.payment_method === "online_payment"
+        ? "online_payment"
+        : payload?.paymentMethod === "soteria_credits" || payload?.payment_method === "soteria_credits"
+          ? "soteria_credits"
+          : undefined,
+    paymentUrl:
+      payload?.paymentUrl != null || payload?.payment_url != null
+        ? String(payload?.paymentUrl ?? payload?.payment_url)
+        : undefined,
+    reference: payload?.reference != null ? String(payload.reference) : undefined,
   };
 }
 
@@ -440,6 +482,21 @@ export async function fetchDispatchDetails(dispatchId: string): Promise<Dispatch
           commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
           commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
           subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          paymentStatus: String(payload.payment.paymentStatus ?? payload.payment.payment_status ?? "system_received"),
+          payoutStatus: String(payload.payment.payoutStatus ?? payload.payment.payout_status ?? "auto_transferred"),
+          payoutTransferredAt:
+            payload.payment.payoutTransferredAt != null || payload.payment.payout_transferred_at != null
+              ? String(payload.payment.payoutTransferredAt ?? payload.payment.payout_transferred_at)
+              : null,
+          transferReference:
+            payload.payment.transferReference != null || payload.payment.transfer_reference != null
+              ? String(payload.payment.transferReference ?? payload.payment.transfer_reference)
+              : null,
+          creditBalanceAfter:
+            payload.payment.creditBalanceAfter != null || payload.payment.credit_balance_after != null
+              ? Number(payload.payment.creditBalanceAfter ?? payload.payment.credit_balance_after)
+              : null,
+          paymentMethod: String(payload.payment.paymentMethod ?? payload.payment.payment_method ?? "soteria_credits"),
         }
       : null,
     motorist: {
@@ -538,6 +595,7 @@ export type UserLoginResponse = {
   subscriptionPlan?: SubscriptionPlan | null;
   subscriptionActivatedAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  soteriaCreditBalance?: number;
   communityCoins?: number;
   communityLifetimeCoins?: number;
   lastCommunityRewardAt?: string | null;
@@ -559,6 +617,9 @@ export type AgentBalanceProofStatus = {
   isApproved: boolean;
   isExpired: boolean;
   canGoOnline: boolean;
+  cashAssistEligible: boolean;
+  cashAssistEnabled: boolean;
+  cashAssistReady: boolean;
   status: string;
   tier: "tier_1" | "tier_2" | null;
   tierLabel: string;
@@ -600,25 +661,49 @@ function detectDevHost() {
 }
 
 const detectedHost = detectDevHost();
+const configuredApiBaseUrl =
+  process.env.EXPO_PUBLIC_API_BASE_URL ??
+  (typeof Constants.expoConfig?.extra?.apiBaseUrl === "string"
+    ? Constants.expoConfig.extra.apiBaseUrl
+    : null);
+
 export const apiBaseUrl =
-  process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ??
+  configuredApiBaseUrl?.replace(/\/$/, "") ??
   (detectedHost
     ? `http://${detectedHost}:4000/api`
     : `http://${Platform.OS === "android" ? "10.0.2.2" : "localhost"}:4000/api`
   );
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+      ...init,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Network request failed";
+    throw new Error(`Cannot connect to the RoadResQ API at ${apiBaseUrl}. ${message}`);
+  }
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(errorText || `Request failed with status ${response.status}`);
+    let message = errorText || `Request failed with status ${response.status}`;
+
+    try {
+      const payload = JSON.parse(errorText);
+      if (typeof payload?.error === "string") {
+        message = payload.error;
+      }
+    } catch {
+      // Keep the raw response text when the server did not return JSON.
+    }
+
+    throw new Error(message);
   }
 
   return (await response.json()) as T;
@@ -672,6 +757,7 @@ export async function createSubscriptionPayment(input: {
   userId: string;
   subscriptionPlan: SubscriptionPlan;
   referenceNote?: string;
+  paymentMethod?: "soteria_credits" | "online_payment";
 }): Promise<SubscriptionPayment> {
   const payload = await apiRequest<any>("/subscription-payments", {
     method: "POST",
@@ -679,6 +765,36 @@ export async function createSubscriptionPayment(input: {
   });
 
   return mapSubscriptionPayment(payload);
+}
+
+export async function fetchSoteriaCredits(userId: string): Promise<{ userId: string; balance: number }> {
+  const payload = await apiRequest<any>(`/users/${userId}/credits`);
+  return {
+    userId: String(payload?.userId ?? payload?.user_id ?? userId),
+    balance: Number(payload?.balance ?? 0),
+  };
+}
+
+export async function topUpSoteriaCredits(
+  userId: string,
+  amount: number,
+): Promise<SoteriaCreditTopUp> {
+  const payload = await apiRequest<any>(`/users/${userId}/credits/topups`, {
+    method: "POST",
+    body: JSON.stringify({ amount }),
+  });
+
+  return {
+    userId: String(payload?.userId ?? payload?.user_id ?? userId),
+    amount: Number(payload?.amount ?? amount),
+    balance: Number(payload?.balance ?? 0),
+    status: String(payload?.status ?? "confirmed"),
+    provider: payload?.provider != null ? String(payload.provider) : undefined,
+    paymentUrl: payload?.paymentUrl != null || payload?.payment_url != null
+      ? String(payload?.paymentUrl ?? payload?.payment_url)
+      : undefined,
+    reference: payload?.reference != null ? String(payload.reference) : undefined,
+  };
 }
 
 export function submitAgentApplication(input: AgentApplicationInput) {
@@ -726,6 +842,9 @@ function mapAgentPaymentProfile(payload: any): AgentPaymentProfile {
       isApproved: Boolean(payload?.balanceProof?.isApproved),
       isExpired: Boolean(payload?.balanceProof?.isExpired),
       canGoOnline: Boolean(payload?.balanceProof?.canGoOnline),
+      cashAssistEligible: Boolean(payload?.balanceProof?.cashAssistEligible),
+      cashAssistEnabled: Boolean(payload?.balanceProof?.cashAssistEnabled),
+      cashAssistReady: Boolean(payload?.balanceProof?.cashAssistReady),
       status: String(payload?.balanceProof?.status ?? "missing"),
       tier:
         payload?.balanceProof?.tier === "tier_1" || payload?.balanceProof?.tier === "tier_2"
@@ -760,6 +879,17 @@ export async function updateAgentPaymentProfile(
   const payload = await apiRequest<any>(`/agents/${agentId}/profile/payment`, {
     method: "PUT",
     body: JSON.stringify(input),
+  });
+  return mapAgentPaymentProfile(payload);
+}
+
+export async function updateAgentCashAssist(
+  agentId: string,
+  enabled: boolean,
+): Promise<AgentPaymentProfile> {
+  const payload = await apiRequest<any>(`/agents/${agentId}/cash-assist`, {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
   });
   return mapAgentPaymentProfile(payload);
 }
@@ -846,6 +976,9 @@ export type NearbyAgent = {
   services: string[];
   latitude: number;
   longitude: number;
+  cashAssistReady?: boolean;
+  cashAssistTier?: "tier_1" | "tier_2" | null;
+  cashAssistTierLabel?: string;
 };
 
 export function fetchAgentDispatches(agentId: string) {
@@ -874,9 +1007,42 @@ export function updateDispatchStatus(dispatchId: string, status: string) {
 }
 
 export function completeDispatch(dispatchId: string, totalAmount: number) {
-  return apiRequest<{ success: boolean; dispatch: any }>(`/dispatches/${dispatchId}/status`, {
+  return apiRequest<{
+    success?: boolean;
+    dispatch?: any;
+    paymentRequired?: boolean;
+    paymentUrl?: string;
+    paymentMethod?: string;
+    servicePaymentId?: string;
+    amount?: number;
+  }>(`/dispatches/${dispatchId}/status`, {
     method: "PATCH",
     body: JSON.stringify({ status: "completed", totalAmount }),
+  });
+}
+
+export function createServiceOnlinePayment(dispatchId: string, totalAmount: number) {
+  return apiRequest<{
+    paymentRequired: boolean;
+    paymentUrl?: string;
+    paymentMethod?: string;
+    servicePaymentId?: string;
+    amount?: number;
+  }>(`/dispatches/${dispatchId}/payment`, {
+    method: "POST",
+    body: JSON.stringify({ paymentMethod: "online_payment" }),
+  });
+}
+
+export function payServiceWithCredits(dispatchId: string) {
+  return apiRequest<{
+    id: string;
+    dispatch_status: string;
+    creditBalance?: number;
+    dispatch?: DispatchDetails;
+  }>(`/dispatches/${dispatchId}/payment`, {
+    method: "POST",
+    body: JSON.stringify({ paymentMethod: "soteria_credits" }),
   });
 }
 
@@ -939,6 +1105,21 @@ function mapDispatchHistoryEntry(payload: any): DispatchHistoryEntry {
           commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
           commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
           subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          paymentStatus: String(payload.payment.paymentStatus ?? payload.payment.payment_status ?? "system_received"),
+          payoutStatus: String(payload.payment.payoutStatus ?? payload.payment.payout_status ?? "auto_transferred"),
+          payoutTransferredAt:
+            payload.payment.payoutTransferredAt != null || payload.payment.payout_transferred_at != null
+              ? String(payload.payment.payoutTransferredAt ?? payload.payment.payout_transferred_at)
+              : null,
+          transferReference:
+            payload.payment.transferReference != null || payload.payment.transfer_reference != null
+              ? String(payload.payment.transferReference ?? payload.payment.transfer_reference)
+              : null,
+          creditBalanceAfter:
+            payload.payment.creditBalanceAfter != null || payload.payment.credit_balance_after != null
+              ? Number(payload.payment.creditBalanceAfter ?? payload.payment.credit_balance_after)
+              : null,
+          paymentMethod: String(payload.payment.paymentMethod ?? payload.payment.payment_method ?? "soteria_credits"),
         }
       : null,
     dispatch: payload?.dispatch
@@ -974,6 +1155,21 @@ function mapDispatchHistoryEntry(payload: any): DispatchHistoryEntry {
                 commissionAmount: Number(payload.dispatch.payment.commissionAmount ?? payload.dispatch.payment.commission_amount ?? 0),
                 commissionRate: Number(payload.dispatch.payment.commissionRate ?? payload.dispatch.payment.commission_rate ?? 0),
                 subscriptionStatus: payload.dispatch.payment.subscriptionStatus === "active" ? "active" : "inactive",
+                paymentStatus: String(payload.dispatch.payment.paymentStatus ?? payload.dispatch.payment.payment_status ?? "system_received"),
+                payoutStatus: String(payload.dispatch.payment.payoutStatus ?? payload.dispatch.payment.payout_status ?? "auto_transferred"),
+                payoutTransferredAt:
+                  payload.dispatch.payment.payoutTransferredAt != null || payload.dispatch.payment.payout_transferred_at != null
+                    ? String(payload.dispatch.payment.payoutTransferredAt ?? payload.dispatch.payment.payout_transferred_at)
+                    : null,
+                transferReference:
+                  payload.dispatch.payment.transferReference != null || payload.dispatch.payment.transfer_reference != null
+                    ? String(payload.dispatch.payment.transferReference ?? payload.dispatch.payment.transfer_reference)
+                    : null,
+                creditBalanceAfter:
+                  payload.dispatch.payment.creditBalanceAfter != null || payload.dispatch.payment.credit_balance_after != null
+                    ? Number(payload.dispatch.payment.creditBalanceAfter ?? payload.dispatch.payment.credit_balance_after)
+                    : null,
+                paymentMethod: String(payload.dispatch.payment.paymentMethod ?? payload.dispatch.payment.payment_method ?? "soteria_credits"),
               }
             : null,
           motorist: {
@@ -1077,7 +1273,7 @@ export function findNearbyAgents(latitude: number, longitude: number, serviceTyp
   const params = new URLSearchParams({
     lat: String(latitude),
     lng: String(longitude),
-    radius: "20",
+    radius: "50",
   });
 
   if (serviceType) {

@@ -5,23 +5,23 @@ import bgImage from "figma:asset/d571ab94c972a42774418c81ee3ff78236af1305.png";
 
 const enterpriseSignals = [
   {
-    title: "Accreditation Oversight",
-    description: "Review responder applications, service coverage, and compliance records from one trusted workspace.",
+    title: "Responder Readiness",
+    description: "Review accredited mechanics, towing teams, rescue riders, and local service coverage from one trusted workspace.",
   },
   {
-    title: "Operational Visibility",
-    description: "Monitor active platform activity, approvals, and account management with a calmer, clearer interface.",
+    title: "Roadside Coordination",
+    description: "Monitor service requests, responder approvals, and active roadside support with a calmer, clearer interface.",
   },
   {
-    title: "Controlled Access",
-    description: "Keep administration secured through a dedicated portal built for authorized KalsadaKonek operators.",
+    title: "Safety Oversight",
+    description: "Keep road safety reports, community concerns, and administrative access organized for authorized Soteria operators.",
   },
 ];
 
 const trustPoints = [
-  "Focused admin-only experience",
-  "Connected to live operational records",
-  "Built for structured review and control",
+  "Roadside service coordination",
+  "Safety reporting oversight",
+  "Structured responder review",
 ];
 
 export function Home() {
@@ -53,7 +53,7 @@ export function Home() {
                 Administrative Access
               </div>
               <p className="max-w-md text-sm leading-6 text-slate-300 sm:text-right">
-                A professional control point for reviewing applications, managing users, and overseeing the platform.
+                A professional control point for roadside assistance, safety reports, responders, and platform users.
               </p>
             </div>
           </div>
@@ -64,15 +64,15 @@ export function Home() {
             <div className="rounded-[28px] border border-white/10 bg-[#0b1525]/72 px-5 py-7 shadow-[0_28px_90px_rgba(0,0,0,0.32)] backdrop-blur-xl sm:px-7 sm:py-8 lg:px-10 lg:py-10">
               <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-[#ff8a65]/25 bg-[#ff8a65]/10 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#ffd5c7] sm:px-4">
                 <Sparkles className="h-4 w-4 text-[#ff8a65]" />
-                KalsadaKonek Platform Administration
+                Soteria Roadside Service & Safety
               </div>
 
               <div className="mt-6 max-w-3xl">
                 <h1 className="text-[2.2rem] font-semibold leading-[1.05] tracking-tight text-white sm:text-[2.8rem] lg:text-[4.25rem]">
-                  Secure operational control for a growing roadside assistance platform.
+                  Coordinated roadside service with safety at the center.
                 </h1>
                 <p className="mt-5 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base lg:text-lg">
-                  Manage accredited responders, review subscription activity, and keep service operations organized from a landing experience designed to feel polished, credible, and enterprise-ready.
+                  Soteria helps authorized operators manage roadside help, responder accreditation, service requests, and safety concerns so stranded motorists can get support with clearer oversight.
                 </p>
               </div>
 
@@ -106,7 +106,7 @@ export function Home() {
             <aside className="flex flex-col gap-4">
               <div className="rounded-[28px] border border-white/10 bg-white/[0.04] p-5 shadow-[0_24px_70px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-6">
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
-                  Why this portal matters
+                  What Soteria supports
                 </p>
                 <div className="mt-5 space-y-4">
                   {enterpriseSignals.map((item, index) => (
@@ -143,7 +143,7 @@ export function Home() {
                     </p>
                     <p className="mt-2 text-lg font-semibold text-white">Admin-first</p>
                     <p className="mt-1 text-sm leading-6 text-slate-300">
-                      Purpose-built for monitoring and approvals rather than public browsing.
+                      Purpose-built for authorized teams that manage roadside service and safety operations.
                     </p>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-[#0d1727]/75 px-4 py-4">
@@ -152,7 +152,7 @@ export function Home() {
                     </p>
                     <p className="mt-2 text-lg font-semibold text-white">Clarity at a glance</p>
                     <p className="mt-1 text-sm leading-6 text-slate-300">
-                      Stronger hierarchy, controlled spacing, and a more credible enterprise presentation.
+                      Clearer organization for requests, responder records, safety topics, and service oversight.
                     </p>
                   </div>
                 </div>
@@ -165,10 +165,10 @@ export function Home() {
           <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-4 py-4 backdrop-blur-xl sm:px-6">
             <div className="flex flex-col gap-3 text-sm text-slate-300 sm:flex-row sm:items-center sm:justify-between">
               <p className="leading-6">
-                KalsadaKonek administration portal for authorized platform operators.
+                Soteria administration portal for roadside service and safety operations.
               </p>
               <p className="text-slate-400">
-                Professional access layer for oversight, review, and platform control.
+                Professional access layer for oversight, responder review, and community safety coordination.
               </p>
             </div>
           </div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router";
 import {
   Activity,
@@ -29,14 +29,18 @@ import {
   fetchAgentApplications,
   fetchAdminEarnings,
   fetchCommunityRedemptions,
+  fetchRepairShops,
   fetchSubscriptionPayments,
   fetchAgentBalanceProofs,
   fetchUsers,
   resolveAssetUrl,
+  createRepairShop,
   deleteManagedUser,
+  deleteRepairShop,
   updateAgentBalanceProofStatus,
   updateCommunityRedemptionStatus,
   updateAgentApplicationStatus,
+  updateRepairShop,
   updateSubscriptionPaymentStatus,
   updateUserSubscriptionStatus,
   getAdminSession,
@@ -46,12 +50,15 @@ import {
   type AdminEarningsSummary,
   type CommunityRedemption,
   type CredentialAsset,
+  type RepairShop,
+  type RepairShopInput,
   type SubscriptionPayment,
   type UserSummary,
 } from "../../api";
 
-type AdminTab = "overview" | "analytics" | "agents" | "motorists" | "community";
+type AdminTab = "overview" | "analytics" | "agents" | "motorists" | "repairshops" | "community";
 type SubscriptionPlan = "monthly" | "six_months" | "annual";
+type RepairShopCategory = RepairShop["category"];
 
 const chartPalette = ["#ff6b3d", "#38bdf8", "#22c55e", "#f59e0b", "#a855f7", "#ef4444"];
 
@@ -60,6 +67,43 @@ const subscriptionPlanOptions: Array<{ value: SubscriptionPlan; label: string }>
   { value: "six_months", label: "6 Months" },
   { value: "annual", label: "Annual" },
 ];
+
+const repairShopCategoryOptions: Array<{ value: RepairShopCategory; label: string }> = [
+  { value: "mechanical", label: "Mechanical" },
+  { value: "vulcanizing", label: "Vulcanizing" },
+  { value: "towing", label: "Towing" },
+  { value: "electrical", label: "Electrical" },
+];
+
+const repairShopServiceOptions = [
+  "Mechanical",
+  "Vulcanizing",
+  "Towing",
+  "Electrical",
+  "Battery service",
+  "Fuel delivery",
+  "Lockout help",
+  "General roadside assistance",
+];
+
+const coreRepairShopServices = repairShopCategoryOptions.map((option) => option.label);
+
+const defaultRepairShopForm: RepairShopInput = {
+  name: "",
+  ownerName: "",
+  category: "mechanical",
+  rating: 4.5,
+  distanceKm: 0,
+  address: "",
+  responseTime: "~15 min",
+  openNow: true,
+  phone: "",
+  email: "",
+  status: "active",
+  latitude: 14.4211,
+  longitude: 121.4461,
+  services: ["General roadside assistance"],
+};
 
 function formatSubscriptionPlan(plan: UserSummary["subscriptionPlan"]) {
   if (plan === "six_months") return "6 Months";
@@ -87,6 +131,9 @@ export function AdminDashboard() {
   const [agentApplications, setAgentApplications] = useState<AgentApplication[]>([]);
   const [agentBalanceProofs, setAgentBalanceProofs] = useState<AgentBalanceProofReview[]>([]);
   const [adminEarnings, setAdminEarnings] = useState<AdminEarningsSummary | null>(null);
+  const [repairShops, setRepairShops] = useState<RepairShop[]>([]);
+  const [editingRepairShopId, setEditingRepairShopId] = useState<string | null>(null);
+  const [repairShopForm, setRepairShopForm] = useState<RepairShopInput>(defaultRepairShopForm);
   const [subscriptionPayments, setSubscriptionPayments] = useState<SubscriptionPayment[]>([]);
   const [communityRedemptions, setCommunityRedemptions] = useState<CommunityRedemption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -130,12 +177,13 @@ export function AdminDashboard() {
       setCommunityWarning("");
 
       try {
-        const [usersData, applicationsData, paymentsData, balanceProofsData, earningsData] = await Promise.all([
+        const [usersData, applicationsData, paymentsData, balanceProofsData, earningsData, repairShopsData] = await Promise.all([
           fetchUsers(),
           fetchAgentApplications(),
           fetchSubscriptionPayments(),
           fetchAgentBalanceProofs(),
           fetchAdminEarnings(),
+          fetchRepairShops(),
         ]);
 
         if (!active) {
@@ -147,6 +195,7 @@ export function AdminDashboard() {
         setSubscriptionPayments(paymentsData);
         setAgentBalanceProofs(balanceProofsData);
         setAdminEarnings(earningsData);
+        setRepairShops(repairShopsData);
 
         try {
           const communityRedemptionsData = await fetchCommunityRedemptions();
@@ -279,6 +328,11 @@ export function AdminDashboard() {
     [agentBalanceProofs],
   );
 
+  const activeRepairShops = useMemo(
+    () => repairShops.filter((shop) => shop.status === "active"),
+    [repairShops],
+  );
+
   const userRoleChartData = useMemo(
     () => [
       { name: "Motorists", value: motorists.length },
@@ -361,7 +415,7 @@ export function AdminDashboard() {
       {
         label: "Community payout queue",
         value: String(pendingCommunityRedemptions.length),
-        helper: "Reward center tickets waiting for manual payout",
+        helper: "Reward center tickets queued for payout processing",
       },
       {
         label: "Pending subscription checks",
@@ -429,7 +483,7 @@ export function AdminDashboard() {
         status,
         session?.username ?? "Admin",
         readinessTier,
-        status === "rejected" ? "Old, unclear, or invalid GCash balance proof." : "",
+        status === "rejected" ? "Invalid payout readiness document." : "",
       );
 
       setAgentBalanceProofs((current) =>
@@ -437,7 +491,7 @@ export function AdminDashboard() {
       );
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : "Failed to review balance proof.",
+        error instanceof Error ? error.message : "Failed to review payout readiness.",
       );
     } finally {
       setActionId(null);
@@ -536,6 +590,110 @@ export function AdminDashboard() {
     }
   };
 
+  const resetRepairShopForm = () => {
+    setEditingRepairShopId(null);
+    setRepairShopForm(defaultRepairShopForm);
+  };
+
+  const handleRepairShopSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setActionId(editingRepairShopId ?? "repair-shop-create");
+    setErrorMessage("");
+
+    try {
+      const input: RepairShopInput = {
+        ...repairShopForm,
+        services: repairShopForm.services.map((service) => service.trim()).filter(Boolean),
+        openNow: repairShopForm.status === "active" && repairShopForm.openNow,
+      };
+      const result = editingRepairShopId
+        ? await updateRepairShop(editingRepairShopId, input)
+        : await createRepairShop(input);
+
+      setRepairShops((current) =>
+        editingRepairShopId
+          ? current.map((shop) => (shop.id === result.id ? result : shop))
+          : [result, ...current],
+      );
+      resetRepairShopForm();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to save repair shop.");
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleRepairShopEdit = (shop: RepairShop) => {
+    setEditingRepairShopId(shop.id);
+    setRepairShopForm({
+      name: shop.name,
+      ownerName: shop.ownerName,
+      category: shop.category,
+      rating: shop.rating,
+      distanceKm: shop.distanceKm,
+      address: shop.address,
+      responseTime: shop.responseTime,
+      openNow: shop.openNow,
+      phone: shop.phone,
+      email: shop.email,
+      status: shop.status,
+      latitude: shop.latitude,
+      longitude: shop.longitude,
+      services: shop.services.length ? shop.services : ["General roadside assistance"],
+    });
+    setActiveTab("repairshops");
+  };
+
+  const toggleRepairShopService = (service: string) => {
+    setRepairShopForm((current) => {
+      const hasService = current.services.includes(service);
+      return {
+        ...current,
+        services: hasService
+          ? current.services.filter((item) => item !== service)
+          : [...current.services, service],
+      };
+    });
+  };
+
+  const toggleAllRepairShopServices = () => {
+    setRepairShopForm((current) => {
+      const hasAllCoreServices = coreRepairShopServices.every((service) =>
+        current.services.includes(service),
+      );
+      const nextServices = hasAllCoreServices
+        ? current.services.filter((service) => !coreRepairShopServices.includes(service))
+        : Array.from(new Set([...current.services, ...coreRepairShopServices]));
+
+      return {
+        ...current,
+        services: nextServices.length ? nextServices : ["General roadside assistance"],
+      };
+    });
+  };
+
+  const handleRepairShopDelete = async (shop: RepairShop) => {
+    const confirmed = window.confirm(`Remove ${shop.name} from the motorist map?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setActionId(shop.id);
+    setErrorMessage("");
+
+    try {
+      await deleteRepairShop(shop.id);
+      setRepairShops((current) => current.filter((item) => item.id !== shop.id));
+      if (editingRepairShopId === shop.id) {
+        resetRepairShopForm();
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to remove repair shop.");
+    } finally {
+      setActionId(null);
+    }
+  };
+
   const handleUserRemoval = async (user: UserSummary) => {
     const confirmed = window.confirm(
       `Remove ${user.fullName} (${user.role}) from the system? This also deletes related records for this account.`,
@@ -614,11 +772,20 @@ export function AdminDashboard() {
             { id: "analytics", label: "Analytics" },
             { id: "agents", label: "Responder Management" },
             { id: "motorists", label: "Motorist Management" },
+            { id: "repairshops", label: "Repair Shops" },
             { id: "community", label: "Community Management" },
+            { id: "forum", label: "Forum Monitor" },
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as AdminTab)}
+              onClick={() => {
+                if (tab.id === "forum") {
+                  navigate("/admin/forum");
+                  return;
+                }
+
+                setActiveTab(tab.id as AdminTab);
+              }}
               className={`border-b-2 py-4 text-sm font-medium transition-colors ${
                 activeTab === tab.id
                   ? "border-[#ff6b3d] text-[#ff6b3d]"
@@ -1050,7 +1217,7 @@ export function AdminDashboard() {
                   <InsightCard
                     label="Community payouts"
                     value={pendingCommunityRedemptions.length > 0 ? `${pendingCommunityRedemptions.length} queued` : "No queue"}
-                    helper="Cash-out requests waiting for manual payout"
+                    helper="Cash-out requests queued for payout processing"
                   />
                 </div>
               </section>
@@ -1116,7 +1283,7 @@ export function AdminDashboard() {
                       </p>
                       <p className="mt-2 text-sm text-amber-100">
                         {application.remarks?.liabilityAcknowledged
-                          ? `Accepted. ${application.organizationName || "The declared organization"} may be held liable if the responder uploads an old or false wallet readiness proof.`
+                          ? `Accepted. ${application.organizationName || "The declared organization"} may be held liable if the responder submits false credentials or payout details.`
                           : "No liability declaration was saved on this application."}
                       </p>
                     </div>
@@ -1194,80 +1361,6 @@ export function AdminDashboard() {
                 ))}
               </div>
             )}
-
-            <div className="mt-8 rounded-2xl border border-gray-800 bg-gray-950 p-5">
-              <div className="mb-4 flex items-center gap-2">
-                <Eye className="h-4 w-4 text-gray-400" />
-                <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
-                  Wallet Readiness Review
-                </h3>
-              </div>
-
-              {pendingBalanceProofs.length === 0 ? (
-                <p className="text-sm text-gray-400">No pending wallet readiness proofs.</p>
-              ) : (
-                <div className="space-y-4">
-                  {pendingBalanceProofs.map((proof) => (
-                    <div key={proof.userId} className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
-                          <p className="font-semibold text-white">{proof.agentName}</p>
-                          <p className="mt-1 text-sm text-gray-400">{proof.phone || "No phone on file"}</p>
-                          <p className="mt-1 text-sm text-gray-400">Business: {proof.businessName || "Not provided"}</p>
-                          <p className="mt-1 text-sm text-gray-400">Organization: {proof.organizationName || "Not provided"}</p>
-                          <p className="mt-1 text-xs text-gray-500">Submitted {proof.submittedAt ?? "Unknown date"}</p>
-                        </div>
-                        <span className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-3 py-1 text-xs font-medium text-yellow-300">
-                          Pending Readiness Review
-                        </span>
-                      </div>
-
-                      <div className="mt-4 grid gap-4 md:grid-cols-3">
-                        <Detail label="Payout GCash Name" value={proof.gcashName || "Not submitted"} />
-                        <Detail label="Payout GCash Number" value={proof.gcashNumber || "Not submitted"} />
-                        <Detail label="Payout Notes" value={proof.payoutNotes || "No notes"} />
-                      </div>
-
-                      <div className="mt-5 flex flex-wrap gap-3">
-                        <a
-                          href={resolveAssetUrl(proof.proofUrl)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-200 transition-colors hover:bg-blue-500/20"
-                        >
-                          <Eye className="h-4 w-4" />
-                          View Proof
-                        </a>
-                        <button
-                          onClick={() => void handleAgentBalanceProofAction(proof.userId, "approved", "tier_1")}
-                          disabled={actionId === `proof-${proof.userId}`}
-                          className="inline-flex items-center gap-2 rounded-lg border border-green-500/40 bg-green-500/10 px-4 py-2 text-sm font-medium text-green-300 transition-colors hover:bg-green-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <CheckCircle className="h-4 w-4" />
-                          {actionId === `proof-${proof.userId}` ? "Processing..." : "Approve Tier 1 - 7 Days"}
-                        </button>
-                        <button
-                          onClick={() => void handleAgentBalanceProofAction(proof.userId, "approved", "tier_2")}
-                          disabled={actionId === `proof-${proof.userId}`}
-                          className="inline-flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-300 transition-colors hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <CheckCircle className="h-4 w-4" />
-                          {actionId === `proof-${proof.userId}` ? "Processing..." : "Approve Tier 2 - 30 Days"}
-                        </button>
-                        <button
-                          onClick={() => void handleAgentBalanceProofAction(proof.userId, "rejected")}
-                          disabled={actionId === `proof-${proof.userId}`}
-                          className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          <XCircle className="h-4 w-4" />
-                          Reject
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
             <div className="mt-8 rounded-2xl border border-gray-800 bg-gray-950 p-5">
               <div className="mb-4 flex items-center gap-2">
@@ -1359,7 +1452,7 @@ export function AdminDashboard() {
               <div>
                 <h2 className="text-lg font-bold">Motorist Management</h2>
                 <p className="text-sm text-gray-400">
-                  Manually activate subscriptions after confirming QR payment received.
+                  Subscription payments can use Soteria Credits or direct online payment and activate automatically after confirmation.
                 </p>
               </div>
               <button
@@ -1373,17 +1466,17 @@ export function AdminDashboard() {
             <div className="mb-5 grid gap-4 md:grid-cols-3">
               <Detail label="Total Motorists" value={String(motorists.length)} />
               <Detail label="Subscribed" value={String(subscribedMotorists)} />
-              <Detail label="Pending Payments" value={String(pendingSubscriptionPayments.length)} />
+              <Detail label="Credits Payments" value={String(subscriptionPayments.length)} />
             </div>
 
             <div className="mb-6 rounded-2xl border border-gray-800 bg-gray-950 p-5">
-              <h3 className="text-base font-bold text-white">Pending Subscription Payments</h3>
+              <h3 className="text-base font-bold text-white">Subscription Credits Status</h3>
               <p className="mt-1 text-sm text-gray-400">
-                Confirm the plan once you receive the payment on the admin phone tied to the QR code.
+                New subscription payments activate automatically when credits are deducted or PayMongo confirms online payment.
               </p>
 
               {pendingSubscriptionPayments.length === 0 ? (
-                <p className="mt-4 text-sm text-gray-400">No pending payment notices.</p>
+                <p className="mt-4 text-sm text-gray-400">No pending confirmations. Credits payment is active.</p>
               ) : (
                 <div className="mt-4 space-y-4">
                   {pendingSubscriptionPayments.map((payment) => (
@@ -1555,6 +1648,271 @@ export function AdminDashboard() {
               </div>
             )}
           </section>
+        ) : activeTab === "repairshops" ? (
+          <section className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
+            <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-lg font-bold">Repair Shop Management</h2>
+                <p className="text-sm text-gray-400">
+                  Shops saved here appear in the motorist nearby repair shop map.
+                </p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Detail label="Total Shops" value={String(repairShops.length)} />
+                <Detail label="Active On Map" value={String(activeRepairShops.length)} />
+              </div>
+            </div>
+
+            <form onSubmit={handleRepairShopSubmit} className="mb-6 rounded-2xl border border-gray-800 bg-gray-950 p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    {editingRepairShopId ? "Edit Repair Shop" : "Add Repair Shop"}
+                  </h3>
+                  <p className="text-sm text-gray-400">
+                    Use exact map coordinates so motorists can detect the correct nearest shop.
+                  </p>
+                </div>
+                {editingRepairShopId ? (
+                  <button
+                    type="button"
+                    onClick={resetRepairShopForm}
+                    className="rounded-lg border border-gray-700 px-4 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:bg-gray-800 hover:text-white"
+                  >
+                    Cancel Edit
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Shop Name</span>
+                  <input
+                    value={repairShopForm.name}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, name: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Owner Name</span>
+                  <input
+                    value={repairShopForm.ownerName}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, ownerName: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Expertise</span>
+                  <select
+                    value={repairShopForm.category}
+                    onChange={(event) =>
+                      setRepairShopForm((current) => ({
+                        ...current,
+                        category: event.target.value as RepairShopCategory,
+                      }))
+                    }
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  >
+                    {repairShopCategoryOptions.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Address</span>
+                  <input
+                    value={repairShopForm.address}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, address: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Status</span>
+                  <select
+                    value={repairShopForm.status}
+                    onChange={(event) =>
+                      setRepairShopForm((current) => ({
+                        ...current,
+                        status: event.target.value as RepairShop["status"],
+                        openNow: event.target.value === "active",
+                      }))
+                    }
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Latitude</span>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={repairShopForm.latitude}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, latitude: Number(event.target.value) }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Longitude</span>
+                  <input
+                    type="number"
+                    step="0.000001"
+                    value={repairShopForm.longitude}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, longitude: Number(event.target.value) }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                    required
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Phone</span>
+                  <input
+                    value={repairShopForm.phone}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, phone: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Email</span>
+                  <input
+                    type="email"
+                    value={repairShopForm.email}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, email: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Response Time</span>
+                  <input
+                    value={repairShopForm.responseTime}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, responseTime: event.target.value }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Rating</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="5"
+                    step="0.1"
+                    value={repairShopForm.rating}
+                    onChange={(event) => setRepairShopForm((current) => ({ ...current, rating: Number(event.target.value) }))}
+                    className="mt-2 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </label>
+                <div className="md:col-span-2 xl:col-span-3">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Services</span>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    <button
+                      type="button"
+                      onClick={toggleAllRepairShopServices}
+                      className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                        coreRepairShopServices.every((service) => repairShopForm.services.includes(service))
+                          ? "border-[#ff6b3d] bg-[#ff6b3d]/10 text-[#ffb197]"
+                          : "border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-600"
+                      }`}
+                    >
+                      All Services
+                    </button>
+                    {repairShopServiceOptions.map((service) => (
+                      <button
+                        key={service}
+                        type="button"
+                        onClick={() => toggleRepairShopService(service)}
+                        className={`rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                          repairShopForm.services.includes(service)
+                            ? "border-[#ff6b3d] bg-[#ff6b3d]/10 text-[#ffb197]"
+                            : "border-gray-700 bg-gray-900 text-gray-300 hover:border-gray-600"
+                        }`}
+                      >
+                        {service}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    value={repairShopForm.services.join(", ")}
+                    onChange={(event) =>
+                      setRepairShopForm((current) => ({
+                        ...current,
+                        services: event.target.value.split(",").map((item) => item.trim()),
+                      }))
+                    }
+                    className="mt-3 min-h-20 w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white outline-none focus:border-[#ff6b3d]"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={actionId === (editingRepairShopId ?? "repair-shop-create")}
+                className="mt-5 inline-flex items-center gap-2 rounded-lg border border-green-500/40 bg-green-500/10 px-4 py-2 text-sm font-medium text-green-300 transition-colors hover:bg-green-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <CheckCircle className="h-4 w-4" />
+                {actionId === (editingRepairShopId ?? "repair-shop-create")
+                  ? "Saving..."
+                  : editingRepairShopId ? "Save Repair Shop" : "Add Repair Shop"}
+              </button>
+            </form>
+
+            {loading ? (
+              <p className="text-sm text-gray-400">Loading repair shops...</p>
+            ) : repairShops.length === 0 ? (
+              <p className="text-sm text-gray-400">No repair shops found.</p>
+            ) : (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {repairShops.map((shop) => (
+                  <div key={shop.id} className="rounded-2xl border border-gray-800 bg-gray-950 p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <h3 className="text-base font-bold text-white">{shop.name}</h3>
+                        <p className="mt-1 text-sm text-gray-400">{shop.address}</p>
+                        <p className="mt-1 text-xs text-gray-500">{shop.latitude}, {shop.longitude}</p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-xs font-medium ${
+                        shop.status === "active"
+                          ? "border border-green-500/40 bg-green-500/10 text-green-300"
+                          : "border border-gray-700 bg-gray-800 text-gray-300"
+                      }`}>
+                        {shop.status === "active" ? "Visible On Map" : "Inactive"}
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-3">
+                      <Detail label="Expertise" value={repairShopCategoryOptions.find((item) => item.value === shop.category)?.label ?? shop.category} />
+                      <Detail label="Phone" value={shop.phone || "No phone"} />
+                      <Detail label="Response" value={shop.responseTime} />
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <Detail label="Owner" value={shop.ownerName || "No owner listed"} />
+                      <Detail label="Services" value={shop.services.join(", ") || "Roadside assistance"} />
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      <button
+                        onClick={() => handleRepairShopEdit(shop)}
+                        className="inline-flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-300 transition-colors hover:bg-blue-500/20"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => void handleRepairShopDelete(shop)}
+                        disabled={actionId === shop.id}
+                        className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <XCircle className="h-4 w-4" />
+                        {actionId === shop.id ? "Removing..." : "Remove"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         ) : (
           <section className="rounded-2xl border border-gray-800 bg-gray-900 p-6">
             <div className="mb-6 flex items-center justify-between gap-4">
@@ -1584,7 +1942,7 @@ export function AdminDashboard() {
             <div className="mb-6 rounded-2xl border border-gray-800 bg-gray-950 p-5">
               <h3 className="text-base font-bold text-white">Pending Reward Center Tickets</h3>
               <p className="mt-1 text-sm text-gray-400">
-                After you manually send the GCash amount, mark the ticket as paid. Rejecting restores the member's coins.
+                Review reward tickets and mark them paid after Soteria payout processing. Rejecting restores the member's coins.
               </p>
 
               {pendingCommunityRedemptions.length === 0 ? (

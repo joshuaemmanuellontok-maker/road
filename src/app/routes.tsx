@@ -52,6 +52,7 @@ export const router = createBrowserRouter([
       // Admin Routes
       { path: "admin/login", Component: AdminLogin },
       { path: "admin/dashboard", Component: AdminDashboard },
+      { path: "admin/forum", Component: CommunityForum },
       { path: "admin/super", Component: SuperAdminDashboard },
       
       // 404

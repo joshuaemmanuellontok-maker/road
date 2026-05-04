@@ -38,7 +38,7 @@ const feedbackConfigs: Record<
 > = {
   "motorist-to-agent": {
     title: "Rate your rescue responder",
-    description: "Share how the service went so KalsadaKonek can keep track of service quality.",
+    description: "Share how the service went so Soteria can keep track of service quality.",
     commentLabel: "Service feedback",
     commentPlaceholder: "Tell us what the responder did well or what can still improve.",
     categoryFields: [
@@ -61,10 +61,9 @@ const feedbackConfigs: Record<
   },
   "agent-to-motorist": {
     title: "Review the motorist",
-    description: "Record how the motorist handled payment, communication, and cooperation during the job.",
+    description: "Record how the motorist handled communication and cooperation during the job. Payment is processed by Soteria automatically.",
     commentLabel: "Motorist notes",
-    commentPlaceholder: "Add any quick notes about payment, cooperation, or communication.",
-    paymentPrompt: "Did the motorist pay the correct amount?",
+    commentPlaceholder: "Add any quick notes about cooperation or communication.",
     categoryFields: [
       {
         key: "communication",
@@ -144,17 +143,19 @@ export function DispatchFeedbackDialog({
   );
   const [overallRating, setOverallRating] = useState(0);
   const [categoryRatings, setCategoryRatings] = useState<Record<string, number>>(initialCategoryRatings);
-  const [paidCorrectAmount, setPaidCorrectAmount] = useState<boolean | null>(null);
+  const [paidCorrectAmount, setPaidCorrectAmount] = useState<boolean | null>(
+    mode === "agent-to-motorist" ? true : null,
+  );
   const [comment, setComment] = useState("");
 
   useEffect(() => {
     if (!open) {
       setOverallRating(0);
       setCategoryRatings(initialCategoryRatings);
-      setPaidCorrectAmount(null);
+      setPaidCorrectAmount(mode === "agent-to-motorist" ? true : null);
       setComment("");
     }
-  }, [initialCategoryRatings, open]);
+  }, [initialCategoryRatings, mode, open]);
 
   if (!open) {
     return null;
@@ -162,8 +163,7 @@ export function DispatchFeedbackDialog({
 
   const canSubmit =
     overallRating > 0 &&
-    config.categoryFields.every((field) => (categoryRatings[field.key] ?? 0) > 0) &&
-    (mode === "motorist-to-agent" || paidCorrectAmount !== null);
+    config.categoryFields.every((field) => (categoryRatings[field.key] ?? 0) > 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
@@ -200,36 +200,6 @@ export function DispatchFeedbackDialog({
               }
             />
           ))}
-
-          {config.paymentPrompt ? (
-            <div className="rounded-xl border border-gray-700 bg-gray-900/70 p-4">
-              <p className="text-sm font-semibold text-white">{config.paymentPrompt}</p>
-              <div className="mt-3 flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setPaidCorrectAmount(true)}
-                  className={`flex-1 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
-                    paidCorrectAmount === true
-                      ? "border-green-500 bg-green-500/15 text-green-300"
-                      : "border-gray-700 bg-gray-800 text-gray-300 hover:border-green-500/50"
-                  }`}
-                >
-                  Yes
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaidCorrectAmount(false)}
-                  className={`flex-1 rounded-xl border px-4 py-3 text-sm font-semibold transition-colors ${
-                    paidCorrectAmount === false
-                      ? "border-red-500 bg-red-500/15 text-red-300"
-                      : "border-gray-700 bg-gray-800 text-gray-300 hover:border-red-500/50"
-                  }`}
-                >
-                  No
-                </button>
-              </div>
-            </div>
-          ) : null}
 
           <div className="rounded-xl border border-gray-700 bg-gray-900/70 p-4">
             <label htmlFor="dispatch-feedback-comment" className="text-sm font-semibold text-white">

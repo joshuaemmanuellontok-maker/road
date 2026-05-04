@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -8,7 +8,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
 import {
   calculateDistance,
   fetchDispatchDetails,
@@ -19,6 +18,7 @@ import {
   type DispatchDetails,
   type DispatchFeedback,
 } from "../lib/roadresqApi";
+import { LeafletMap, type LeafletMarker } from "./LeafletMap";
 
 type AgentNavStatus = "en-route" | "arrived" | "working";
 
@@ -73,10 +73,8 @@ export const AgentTrackingScreen: React.FC<Props> = ({
     cooperation: 0,
     paymentExperience: 0,
   });
-  const [paidCorrectAmount, setPaidCorrectAmount] = useState<boolean | null>(null);
+  const [paidCorrectAmount] = useState<boolean | null>(true);
   const [comment, setComment] = useState("");
-  const mapRef = useRef<MapView>(null);
-
   const motoristLocation = dispatch?.motorist
     ? {
         latitude: dispatch.motorist.latitude,
@@ -156,15 +154,6 @@ export const AgentTrackingScreen: React.FC<Props> = ({
   }, [agentLocation, motoristLocation]);
 
   useEffect(() => {
-    if (!mapRef.current || !motoristLocation) return;
-
-    mapRef.current.fitToCoordinates([agentLocation, motoristLocation], {
-      edgePadding: { top: 80, right: 60, bottom: 220, left: 60 },
-      animated: true,
-    });
-  }, [agentLocation, motoristLocation]);
-
-  useEffect(() => {
     if (dispatch?.dispatchStatus === "completed") {
       setReviewOpen(true);
     }
@@ -196,7 +185,6 @@ export const AgentTrackingScreen: React.FC<Props> = ({
             cooperation: ownFeedback.categoryRatings.cooperation ?? 0,
             paymentExperience: ownFeedback.categoryRatings.paymentExperience ?? 0,
           });
-          setPaidCorrectAmount(ownFeedback.paidCorrectAmount);
           setComment(ownFeedback.comment ?? "");
         }
       } catch (loadError) {
@@ -226,10 +214,9 @@ export const AgentTrackingScreen: React.FC<Props> = ({
       overallRating < 1 ||
       categoryRatings.communication < 1 ||
       categoryRatings.cooperation < 1 ||
-      categoryRatings.paymentExperience < 1 ||
-      paidCorrectAmount === null
+      categoryRatings.paymentExperience < 1
     ) {
-      setFeedbackError("Please complete all ratings and payment confirmation before submitting.");
+      setFeedbackError("Please complete all ratings before submitting.");
       return;
     }
 
@@ -283,25 +270,64 @@ export const AgentTrackingScreen: React.FC<Props> = ({
   const agentReview = feedbackThread.find((item) => item.reviewerRole === "agent") ?? existingFeedback;
   const canSubmitReview = !existingFeedback;
   const isCompleted = dispatch.dispatchStatus === "completed";
+  const isPaymentPending = dispatch.dispatchStatus === "payment_pending";
+  const mapMarkers: LeafletMarker[] = [
+    {
+      id: "motorist",
+      latitude: motoristLocation.latitude,
+      longitude: motoristLocation.longitude,
+      title: "Motorist",
+      description: dispatch.motorist.fullName,
+      color: "#fb923c",
+    },
+    {
+      id: "responder",
+      latitude: agentLocation.latitude,
+      longitude: agentLocation.longitude,
+      title: "Responder",
+      description: agentName,
+      color: "#22c55e",
+    },
+  ];
+
+  if (isPaymentPending) {
+    return (
+      <View style={styles.container}>
+        <View style={[styles.completedMapWrap, mapMinimized && styles.completedMapWrapMinimized]}>
+          <LeafletMap center={agentLocation} markers={mapMarkers} route={route} zoom={15} />
+
+          <Pressable style={styles.minimizeButton} onPress={() => setMapMinimized((current) => !current)}>
+            <Text style={styles.minimizeButtonText}>{mapMinimized ? "Expand Map" : "Minimize Map"}</Text>
+          </Pressable>
+        </View>
+
+        <ScrollView style={styles.completedPanel} contentContainerStyle={styles.completedPanelContent}>
+          <View style={[styles.statusBar, styles.pendingPaymentStatusBar]}>
+            <Text style={styles.statusTitle}>Waiting for Motorist Payment</Text>
+            <Text style={styles.statusSubtext}>
+              The service amount was sent to the motorist. They will choose Soteria Credits or PayMongo on their tracking screen.
+            </Text>
+          </View>
+
+          <View style={styles.reviewCard}>
+            <Text style={styles.reviewTitle}>Payment Request</Text>
+            <Text style={styles.reviewMeta}>Motorist: {dispatch.motorist.fullName}</Text>
+            <Text style={styles.reviewMeta}>Total due: PHP {dispatch.payment?.totalAmount ?? 0}</Text>
+            <Text style={styles.reviewMeta}>Responder net payout: PHP {dispatch.payment?.serviceAmount ?? 0}</Text>
+            <Text style={styles.reviewHint}>
+              Feedback opens after payment is confirmed and the dispatch becomes completed.
+            </Text>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   if (isCompleted) {
     return (
       <View style={styles.container}>
         <View style={[styles.completedMapWrap, mapMinimized && styles.completedMapWrapMinimized]}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            initialRegion={{
-              latitude: motoristLocation.latitude,
-              longitude: motoristLocation.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-          >
-            <Marker coordinate={motoristLocation} title="Motorist" pinColor="#fb923c" />
-            <Marker coordinate={agentLocation} title="Responder" pinColor="#22c55e" description={agentName} />
-            {route.length > 1 ? <Polyline coordinates={route} strokeWidth={3} strokeColor="#3b82f6" /> : null}
-          </MapView>
+          <LeafletMap center={agentLocation} markers={mapMarkers} route={route} zoom={15} />
 
           <Pressable style={styles.minimizeButton} onPress={() => setMapMinimized((current) => !current)}>
             <Text style={styles.minimizeButtonText}>{mapMinimized ? "Expand Map" : "Minimize Map"}</Text>
@@ -352,30 +378,14 @@ export const AgentTrackingScreen: React.FC<Props> = ({
                   value={categoryRatings.paymentExperience}
                   onChange={(value) => setCategoryRatings((current) => ({ ...current, paymentExperience: value }))}
                 />
-                <Text style={styles.inputLabel}>Did the motorist pay the correct amount?</Text>
-                <View style={styles.paymentRow}>
-                  <Pressable
-                    style={[styles.paymentChoice, paidCorrectAmount === true && styles.paymentChoiceActive]}
-                    onPress={() => setPaidCorrectAmount(true)}
-                  >
-                    <Text style={[styles.paymentChoiceText, paidCorrectAmount === true && styles.paymentChoiceTextActive]}>
-                      Yes
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.paymentChoice, paidCorrectAmount === false && styles.paymentChoiceDanger]}
-                    onPress={() => setPaidCorrectAmount(false)}
-                  >
-                    <Text style={[styles.paymentChoiceText, paidCorrectAmount === false && styles.paymentChoiceTextDanger]}>
-                      No
-                    </Text>
-                  </Pressable>
-                </View>
+            <Text style={styles.reviewHint}>
+                  Payment was processed through Soteria automatically, including commission deduction and responder payout.
+                </Text>
                 <Text style={styles.inputLabel}>Comment</Text>
                 <TextInput
                   value={comment}
                   onChangeText={setComment}
-                  placeholder="Add quick notes about payment, cooperation, or communication"
+                  placeholder="Add quick notes about cooperation or communication"
                   placeholderTextColor="#94a3b8"
                   multiline
                   style={styles.commentInput}
@@ -438,20 +448,9 @@ export const AgentTrackingScreen: React.FC<Props> = ({
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={styles.map}
-        initialRegion={{
-          latitude: motoristLocation.latitude,
-          longitude: motoristLocation.longitude,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        }}
-      >
-        <Marker coordinate={motoristLocation} title="Motorist" pinColor="#fb923c" />
-        <Marker coordinate={agentLocation} title="Responder" pinColor="#22c55e" description={agentName} />
-        {route.length > 1 ? <Polyline coordinates={route} strokeWidth={3} strokeColor="#3b82f6" /> : null}
-      </MapView>
+      <View style={styles.map}>
+        <LeafletMap center={agentLocation} markers={mapMarkers} route={route} zoom={15} />
+      </View>
 
       <View style={styles.statusBar}>
         <Text style={styles.statusTitle}>Live Navigation</Text>
@@ -487,6 +486,9 @@ export const AgentTrackingScreen: React.FC<Props> = ({
               <Text style={styles.linkButtonText}>{editingFee ? "Save Fee" : "Edit Fee"}</Text>
             </Pressable>
           </View>
+          <Text style={styles.reviewHint}>
+            The motorist will choose Soteria Credits or PayMongo after you request payment.
+          </Text>
         </View>
 
         <View style={styles.reviewCard}>
@@ -574,6 +576,9 @@ const styles = StyleSheet.create({
   },
   completedStatusBar: {
     backgroundColor: "#dcfce7",
+  },
+  pendingPaymentStatusBar: {
+    backgroundColor: "#ffedd5",
   },
   statusTitle: {
     fontSize: 16,

@@ -1,4 +1,4 @@
-# Supabase Setup for KalsadaKonek Backend
+# Supabase Setup for Soteria Backend
 
 ## 1. Create Supabase Project
 1. Open your Supabase dashboard.

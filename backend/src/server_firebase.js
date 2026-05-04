@@ -1,5 +1,6 @@
 import bcrypt from "bcryptjs";
 import cors from "cors";
+import { createHmac, timingSafeEqual } from "crypto";
 import dotenv from "dotenv";
 import express from "express";
 import { mkdir, writeFile } from "fs/promises";
@@ -20,6 +21,7 @@ const responderProfileCollections = [collections.agentProfiles, legacyCollection
 const responderApplicationCollections = [collections.agentApplications, legacyCollections.agentApplications];
 
 app.use(cors({ origin: corsOrigin === "*" ? true : corsOrigin.split(",") }));
+app.use("/api/payments/webhooks/paymongo", express.raw({ type: "application/json" }));
 app.use(express.json({ limit: "25mb" }));
 app.use("/uploads", express.static(uploadsRoot));
 
@@ -368,6 +370,7 @@ function normalizeRepairShop(data) {
   return {
     id: data.id,
     name: data.name,
+    owner_name: data.owner_name ?? "",
     category: data.category ?? data.service_type ?? "mechanical",
     rating: Number(data.rating ?? 0),
     distance_km: Number(data.distance_km ?? data.distanceKm ?? 0),
@@ -375,9 +378,58 @@ function normalizeRepairShop(data) {
     response_time: data.response_time ?? data.responseTime ?? "~15 min",
     open_now: Boolean(data.open_now ?? data.openNow ?? data.status === "active"),
     phone: data.phone ?? data.contact_number ?? null,
+    email: data.email ?? "",
+    status: data.status ?? (data.open_now === false ? "inactive" : "active"),
     latitude: Number(data.latitude ?? 0),
     longitude: Number(data.longitude ?? 0),
     services: Array.isArray(data.services) ? data.services : ["Roadside assistance"],
+  };
+}
+
+function normalizeRepairShopCategory(value) {
+  const category = String(value ?? "").trim().toLowerCase();
+  const allowed = new Set(["mechanical", "vulcanizing", "towing", "electrical"]);
+  return allowed.has(category) ? category : "mechanical";
+}
+
+function normalizeRepairShopPayload(payload = {}) {
+  const name = String(payload.name ?? "").trim();
+  const address = String(payload.address ?? "").trim();
+  const latitude = Number(payload.latitude);
+  const longitude = Number(payload.longitude);
+
+  if (!name || !address || !Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    const error = new Error("name, address, latitude, and longitude are required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const services = Array.isArray(payload.services)
+    ? payload.services.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : String(payload.services ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+  return {
+    name,
+    owner_name: String(payload.ownerName ?? payload.owner_name ?? "").trim(),
+    contact_number: String(payload.phone ?? payload.contact_number ?? "").trim(),
+    email: String(payload.email ?? "").trim(),
+    address,
+    latitude,
+    longitude,
+    category: normalizeRepairShopCategory(payload.category),
+    rating: Number.isFinite(Number(payload.rating)) ? Number(payload.rating) : 4.5,
+    distance_km: Number.isFinite(Number(payload.distanceKm ?? payload.distance_km))
+      ? Number(payload.distanceKm ?? payload.distance_km)
+      : 0,
+    response_time: String(payload.responseTime ?? payload.response_time ?? "~15 min").trim() || "~15 min",
+    status: payload.status === "inactive" ? "inactive" : "active",
+    open_now: payload.openNow === false || payload.open_now === false || payload.status === "inactive"
+      ? false
+      : true,
+    services: services.length ? services : ["Roadside assistance"],
   };
 }
 
@@ -426,6 +478,8 @@ async function createMotorist(payload) {
     subscription_plan: null,
     subscription_activated_at: null,
     subscription_expires_at: null,
+    soteria_credit_balance: 0,
+    soteria_credit_updated_at: null,
   });
 
   await createDocument(collections.motoristProfiles, {
@@ -503,6 +557,7 @@ async function createAgentApplication(payload) {
     payout_notes: "",
     liability_acknowledged: Boolean(payload.liabilityAcknowledged),
     wallet_readiness_tier: null,
+    cash_assist_enabled: false,
     balance_proof_status: "missing",
     balance_proof_asset: null,
     balance_proof_submitted_at: null,
@@ -556,7 +611,7 @@ async function findNearbyAgent(motoristLat, motoristLng, serviceType) {
         ...rankNearbyAgent(serviceType, agent),
       };
     })
-    .filter(agent => agent.distance_km <= 20)
+    .filter(agent => agent.distance_km <= 50)
     .filter(agent => agent.compatibleServiceMatch)
     .sort((a, b) => {
       if (a.exactServiceMatch !== b.exactServiceMatch) {
@@ -624,6 +679,14 @@ async function buildDispatchDetails(dispatch) {
             commissionAmount: Number(dispatch.commission_amount ?? 0),
             commissionRate: Number(dispatch.commission_rate ?? 0),
             subscriptionStatus: dispatch.motorist_subscription_status === "active" ? "active" : "inactive",
+            paymentStatus: dispatch.payment_status ?? "system_received",
+            paymentMethod: dispatch.payment_method ?? "soteria_credits",
+            payoutStatus: dispatch.payout_status ?? "auto_transferred",
+            payoutTransferredAt: formatFirestoreDateTime(dispatch.payout_transferred_at),
+            transferReference: dispatch.transfer_reference ?? null,
+            creditBalanceAfter:
+              dispatch.credit_balance_after != null ? Number(dispatch.credit_balance_after) : null,
+            paymentMethod: dispatch.payment_method ?? "soteria_credits",
           }
         : null,
     motorist: emergencyReport && motoristUser
@@ -710,6 +773,13 @@ function serializeDispatchDetails(details) {
           commissionAmount: Number(details.payment.commissionAmount ?? 0),
           commissionRate: Number(details.payment.commissionRate ?? 0),
           subscriptionStatus: details.payment.subscriptionStatus ?? "inactive",
+          paymentStatus: details.payment.paymentStatus ?? "system_received",
+          paymentMethod: details.payment.paymentMethod ?? "soteria_credits",
+          payoutStatus: details.payment.payoutStatus ?? "auto_transferred",
+          payoutTransferredAt: details.payment.payoutTransferredAt ?? null,
+          transferReference: details.payment.transferReference ?? null,
+          creditBalanceAfter:
+            details.payment.creditBalanceAfter != null ? Number(details.payment.creditBalanceAfter) : null,
         }
       : null,
     motorist: details.motorist
@@ -792,6 +862,374 @@ function roundCurrency(value) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 }
 
+function readSoteriaCreditBalance(user) {
+  return roundCurrency(Number(user?.soteria_credit_balance ?? 0));
+}
+
+function formatSoteriaCredits(user) {
+  return {
+    userId: user?.id ?? "",
+    balance: readSoteriaCreditBalance(user),
+  };
+}
+
+function getPayMongoConfig() {
+  return {
+    secretKey: process.env.PAYMONGO_SECRET_KEY ?? "",
+    webhookSecret: process.env.PAYMONGO_WEBHOOK_SECRET ?? "",
+    signatureMode: (process.env.PAYMONGO_SIGNATURE_MODE ?? "test").toLowerCase() === "live" ? "li" : "te",
+  };
+}
+
+function encodePayMongoAuth(secretKey) {
+  return Buffer.from(`${secretKey}:`).toString("base64");
+}
+
+async function createPayMongoLink({ amount, description, reference }) {
+  const { secretKey } = getPayMongoConfig();
+  if (!secretKey) {
+    const error = new Error("PayMongo is not configured. Add PAYMONGO_SECRET_KEY to backend/.env.");
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const response = await fetch("https://api.paymongo.com/v1/links", {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${encodePayMongoAuth(secretKey)}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      data: {
+        attributes: {
+          amount: Math.round(amount * 100),
+          description,
+          remarks: reference,
+        },
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = payload?.errors?.[0]?.detail ?? payload?.errors?.[0]?.code ?? "PayMongo link creation failed.";
+    const error = new Error(detail);
+    error.statusCode = response.status;
+    throw error;
+  }
+
+  const data = payload?.data ?? {};
+  const attributes = data.attributes ?? {};
+
+  return {
+    provider: "paymongo",
+    providerLinkId: data.id ?? "",
+    providerReferenceNumber: attributes.reference_number ?? "",
+    paymentUrl: attributes.checkout_url ?? "",
+    status: attributes.status ?? "active",
+  };
+}
+
+async function createPayMongoTopUpLink({ amount, reference }) {
+  return createPayMongoLink({
+    amount,
+    reference,
+    description: `Soteria Credits Top-up - PHP ${amount}`,
+  });
+}
+
+async function createPayMongoSubscriptionLink({ amount, plan, reference }) {
+  return createPayMongoLink({
+    amount,
+    reference,
+    description: `Soteria Subscription - ${formatSubscriptionPlanLabel(plan)} - PHP ${amount}`,
+  });
+}
+
+async function createPayMongoServiceLink({ amount, dispatchId, reference }) {
+  return createPayMongoLink({
+    amount,
+    reference,
+    description: `Soteria Roadside Service - ${dispatchId} - PHP ${amount}`,
+  });
+}
+
+function parsePayMongoSignature(header) {
+  return String(header ?? "")
+    .split(",")
+    .map((part) => part.trim().split("="))
+    .reduce((acc, [key, value]) => {
+      if (key) acc[key] = value ?? "";
+      return acc;
+    }, {});
+}
+
+function verifyPayMongoWebhookSignature(rawBody, signatureHeader) {
+  const { webhookSecret, signatureMode } = getPayMongoConfig();
+  if (!webhookSecret) {
+    return process.env.PAYMONGO_REQUIRE_WEBHOOK_SIGNATURE === "false";
+  }
+
+  const parts = parsePayMongoSignature(signatureHeader);
+  const timestamp = parts.t;
+  const expectedSignature = parts[signatureMode];
+  if (!timestamp || !expectedSignature) {
+    return false;
+  }
+
+  const payload = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody ?? "");
+  const computed = createHmac("sha256", webhookSecret)
+    .update(`${timestamp}.${payload}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expectedSignature, "hex");
+  const computedBuffer = Buffer.from(computed, "hex");
+
+  return expectedBuffer.length === computedBuffer.length && timingSafeEqual(expectedBuffer, computedBuffer);
+}
+
+async function findPendingTopUpFromPayMongoLink(link) {
+  const attributes = link?.attributes ?? {};
+  const providerLinkId = link?.id ?? "";
+  const referenceNumber = attributes.reference_number ?? "";
+  const remarks = attributes.remarks ?? "";
+
+  const lookups = [
+    providerLinkId ? { provider_link_id: providerLinkId } : null,
+    referenceNumber ? { provider_reference_number: referenceNumber } : null,
+    remarks ? { reference: remarks } : null,
+  ].filter(Boolean);
+
+  for (const condition of lookups) {
+    const matches = await getDocuments("soteria_credit_topups", condition);
+    const pending = matches.find((item) => item.status !== "credited");
+    if (pending) {
+      return pending;
+    }
+  }
+
+  return null;
+}
+
+async function findPendingPaymentFromPayMongoLink(collectionName, link) {
+  const attributes = link?.attributes ?? {};
+  const providerLinkId = link?.id ?? "";
+  const referenceNumber = attributes.reference_number ?? "";
+  const remarks = attributes.remarks ?? "";
+
+  const lookups = [
+    providerLinkId ? { provider_link_id: providerLinkId } : null,
+    referenceNumber ? { provider_reference_number: referenceNumber } : null,
+    remarks ? { reference: remarks } : null,
+  ].filter(Boolean);
+
+  for (const condition of lookups) {
+    const matches = await getDocuments(collectionName, condition);
+    const pending = matches.find((item) => !["confirmed", "credited", "completed"].includes(String(item.status ?? "")));
+    if (pending) {
+      return pending;
+    }
+  }
+
+  return null;
+}
+
+async function creditPaidTopUpFromPayMongo(link) {
+  const topUp = await findPendingTopUpFromPayMongoLink(link);
+  if (!topUp) {
+    return { credited: false, reason: "topup_not_found" };
+  }
+
+  if (topUp.status === "credited") {
+    return { credited: false, reason: "already_credited" };
+  }
+
+  const user = await getDocument(collections.users, topUp.user_id);
+  if (!user || user.role !== "motorist") {
+    return { credited: false, reason: "motorist_not_found" };
+  }
+
+  const result = await addSoteriaCredits(user, Number(topUp.amount ?? 0), "online_topup", {
+    topUpId: topUp.id,
+    provider: "paymongo",
+    providerLinkId: link?.id ?? topUp.provider_link_id ?? "",
+    providerReferenceNumber: link?.attributes?.reference_number ?? topUp.provider_reference_number ?? "",
+  });
+
+  await updateDocument("soteria_credit_topups", topUp.id, {
+    status: "credited",
+    credited_at: serverTimestamp(),
+    credit_balance_after: result.balance,
+    provider_status: link?.attributes?.status ?? "paid",
+    webhook_payload_id: link?.id ?? "",
+  });
+
+  return { credited: true, topUpId: topUp.id, balance: result.balance };
+}
+
+async function activatePaidSubscriptionFromPayMongo(link) {
+  const payment = await findPendingPaymentFromPayMongoLink(collections.subscriptionPayments, link);
+  if (!payment) {
+    return { fulfilled: false, reason: "subscription_payment_not_found" };
+  }
+
+  if (normalizePaymentStatus(payment.status) === "confirmed") {
+    return { fulfilled: false, reason: "already_confirmed" };
+  }
+
+  const user = await getDocument(collections.users, payment.user_id);
+  const normalizedPlan = normalizeSubscriptionPlan(payment.subscription_plan);
+  if (!user || user.role !== "motorist" || !normalizedPlan) {
+    return { fulfilled: false, reason: "invalid_subscription_payment" };
+  }
+
+  const expiryDate = calculateSubscriptionExpiry(normalizedPlan);
+  await updateDocument(collections.subscriptionPayments, payment.id, {
+    status: "confirmed",
+    reviewed_at: serverTimestamp(),
+    provider_status: link?.attributes?.status ?? "paid",
+    payment_status: "paid",
+  });
+
+  await updateDocument(collections.users, user.id, {
+    subscription_status: "active",
+    subscription_plan: normalizedPlan,
+    subscription_activated_at: serverTimestamp(),
+    subscription_expires_at: expiryDate,
+  });
+
+  return { fulfilled: true, paymentId: payment.id, userId: user.id, subscriptionPlan: normalizedPlan };
+}
+
+async function completePaidServiceFromPayMongo(link) {
+  const servicePayment = await findPendingPaymentFromPayMongoLink("service_payments", link);
+  if (!servicePayment) {
+    return { fulfilled: false, reason: "service_payment_not_found" };
+  }
+
+  if (servicePayment.status === "completed") {
+    return { fulfilled: false, reason: "already_completed" };
+  }
+
+  const dispatch = await getDocument(collections.dispatches, servicePayment.dispatch_id);
+  if (!dispatch) {
+    return { fulfilled: false, reason: "dispatch_not_found" };
+  }
+
+  const dispatchDetails = await buildDispatchDetails(dispatch);
+  const payment = await buildDispatchPaymentSummary(
+    {
+      ...dispatch,
+      total_amount: servicePayment.amount,
+    },
+    dispatchDetails,
+  );
+
+  await updateDocument(collections.dispatches, dispatch.id, {
+    dispatch_status: "completed",
+    completed_at: serverTimestamp(),
+    total_amount: payment.totalAmount,
+    service_amount: payment.serviceAmount,
+    commission_amount: payment.commissionAmount,
+    commission_rate: payment.commissionRate,
+    motorist_subscription_status: payment.subscriptionStatus,
+    payment_status: "provider_paid",
+    payment_method: "online_payment",
+    payout_status: "processing",
+    payout_transferred_at: null,
+    transfer_reference: payment.transferReference,
+    service_payment_id: servicePayment.id,
+  });
+
+  if (dispatch.emergency_report_id) {
+    await updateDocument(collections.emergencyReports, dispatch.emergency_report_id, {
+      report_status: "completed",
+    });
+  }
+
+  await updateDocument("service_payments", servicePayment.id, {
+    status: "completed",
+    provider_status: link?.attributes?.status ?? "paid",
+    paid_at: serverTimestamp(),
+    service_amount: payment.serviceAmount,
+    commission_amount: payment.commissionAmount,
+    commission_rate: payment.commissionRate,
+  });
+
+  await queueAndProcessResponderPayout(
+    { ...dispatch, service_payment_id: servicePayment.id },
+    dispatchDetails,
+    payment,
+  );
+
+  return { fulfilled: true, servicePaymentId: servicePayment.id, dispatchId: dispatch.id };
+}
+
+async function addSoteriaCredits(user, amount, source = "online_topup", metadata = {}) {
+  const creditAmount = roundCurrency(amount);
+  if (!user?.id || creditAmount <= 0) {
+    throw new Error("A valid top-up amount is required.");
+  }
+
+  const currentBalance = readSoteriaCreditBalance(user);
+  const nextBalance = roundCurrency(currentBalance + creditAmount);
+
+  await updateDocument(collections.users, user.id, {
+    soteria_credit_balance: nextBalance,
+    soteria_credit_updated_at: serverTimestamp(),
+  });
+
+  await createDocument("soteria_credit_transactions", {
+    user_id: user.id,
+    type: "credit",
+    source,
+    amount: creditAmount,
+    balance_before: currentBalance,
+    balance_after: nextBalance,
+    metadata,
+    created_at: serverTimestamp(),
+  });
+
+  return { balance: nextBalance, amount: creditAmount };
+}
+
+async function deductSoteriaCredits(user, amount, source, metadata = {}) {
+  const debitAmount = roundCurrency(amount);
+  if (!user?.id || debitAmount <= 0) {
+    throw new Error("A valid debit amount is required.");
+  }
+
+  const currentBalance = readSoteriaCreditBalance(user);
+  if (currentBalance < debitAmount) {
+    const error = new Error(
+      `Insufficient Soteria Credits. Balance PHP ${currentBalance}; required PHP ${debitAmount}.`,
+    );
+    error.statusCode = 402;
+    throw error;
+  }
+
+  const nextBalance = roundCurrency(currentBalance - debitAmount);
+
+  await updateDocument(collections.users, user.id, {
+    soteria_credit_balance: nextBalance,
+    soteria_credit_updated_at: serverTimestamp(),
+  });
+
+  await createDocument("soteria_credit_transactions", {
+    user_id: user.id,
+    type: "debit",
+    source,
+    amount: debitAmount,
+    balance_before: currentBalance,
+    balance_after: nextBalance,
+    metadata,
+    created_at: serverTimestamp(),
+  });
+
+  return { balance: nextBalance, amount: debitAmount };
+}
+
 function normalizeCurrencyInput(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return roundCurrency(value);
@@ -803,6 +1241,150 @@ function normalizeCurrencyInput(value) {
   }
 
   return 0;
+}
+
+function getPayoutProviderMode() {
+  const defaultProvider = process.env.NODE_ENV === "production" ? "manual" : "simulated";
+  const provider = String(process.env.PAYOUT_PROVIDER ?? defaultProvider).trim().toLowerCase();
+  return provider || "simulated";
+}
+
+async function createResponderPayoutForDispatch(dispatch, dispatchDetails, payment) {
+  const existingPayouts = await getDocuments("responder_payouts", { dispatch_id: dispatch.id });
+  const existing = existingPayouts[0] ?? null;
+  if (existing) {
+    return existing;
+  }
+
+  const responderUserId = dispatchDetails.agent?.id ?? getDispatchResponderUserId(dispatch);
+  const responderProfile = responderUserId ? await getAgentProfileByUserId(responderUserId) : null;
+  const gcashName = String(responderProfile?.payout_gcash_name ?? "").trim();
+  const gcashNumber = String(responderProfile?.payout_gcash_number ?? "").trim();
+  const hasDestination = Boolean(gcashName && gcashNumber);
+  const transferReference = payment.transferReference || `SOT-${dispatch.id}-${Date.now()}`;
+
+  const payoutId = await createDocument("responder_payouts", {
+    dispatch_id: dispatch.id,
+    service_payment_id: dispatch.service_payment_id ?? null,
+    responder_user_id: responderUserId ?? "",
+    motorist_user_id: dispatchDetails.motorist?.id ?? "",
+    gross_amount: payment.totalAmount,
+    commission_amount: payment.commissionAmount,
+    net_amount: payment.serviceAmount,
+    currency: "PHP",
+    destination_type: "gcash",
+    destination_name: gcashName,
+    destination_account: gcashNumber,
+    destination_notes: responderProfile?.payout_notes ?? "",
+    provider: getPayoutProviderMode(),
+    provider_payout_id: null,
+    transfer_reference: transferReference,
+    status: hasDestination ? "queued" : "details_required",
+    failure_reason: hasDestination ? "" : "Responder GCash payout details are missing.",
+    requested_at: serverTimestamp(),
+    processed_at: null,
+    paid_at: null,
+  });
+
+  return getDocument("responder_payouts", payoutId);
+}
+
+async function processResponderPayout(payout) {
+  if (!payout) {
+    return null;
+  }
+
+  if (["paid", "processing"].includes(String(payout.status ?? ""))) {
+    return payout;
+  }
+
+  if (payout.status === "details_required") {
+    return payout;
+  }
+
+  const provider = getPayoutProviderMode();
+  const payoutId = payout.id;
+
+  if (provider === "manual") {
+    await updateDocument("responder_payouts", payoutId, {
+      status: "queued",
+      provider,
+      processed_at: serverTimestamp(),
+      failure_reason: "",
+    });
+    return getDocument("responder_payouts", payoutId);
+  }
+
+  if (provider === "simulated" || process.env.NODE_ENV !== "production") {
+    const providerPayoutId = `SIM-GCASH-${payoutId}`;
+    await updateDocument("responder_payouts", payoutId, {
+      status: "paid",
+      provider,
+      provider_payout_id: providerPayoutId,
+      processed_at: serverTimestamp(),
+      paid_at: serverTimestamp(),
+      failure_reason: "",
+    });
+    return getDocument("responder_payouts", payoutId);
+  }
+
+  await updateDocument("responder_payouts", payoutId, {
+    status: "queued",
+    provider,
+    processed_at: serverTimestamp(),
+    failure_reason:
+      "Live payout provider is not configured yet. Enable PayMongo Money Movement/Disbursements or another payout API.",
+  });
+  return getDocument("responder_payouts", payoutId);
+}
+
+async function queueAndProcessResponderPayout(dispatch, dispatchDetails, payment) {
+  const payout = await createResponderPayoutForDispatch(dispatch, dispatchDetails, payment);
+  const processedPayout = await processResponderPayout(payout);
+  const status = processedPayout?.status ?? "queued";
+  const payoutStatus =
+    status === "paid"
+      ? "auto_transferred"
+      : status === "details_required"
+        ? "payout_details_required"
+        : status;
+
+  await updateDocument(collections.dispatches, dispatch.id, {
+    payout_status: payoutStatus,
+    payout_transferred_at: status === "paid" ? serverTimestamp() : null,
+    transfer_reference: processedPayout?.transfer_reference ?? payment.transferReference,
+    responder_payout_id: processedPayout?.id ?? payout?.id ?? null,
+  });
+
+  return processedPayout;
+}
+
+async function listResponderPayouts() {
+  const payouts = await getDocuments("responder_payouts");
+  return payouts
+    .map((payout) => ({
+      id: payout.id,
+      dispatchId: payout.dispatch_id ?? "",
+      servicePaymentId: payout.service_payment_id ?? null,
+      responderUserId: payout.responder_user_id ?? "",
+      motoristUserId: payout.motorist_user_id ?? "",
+      grossAmount: Number(payout.gross_amount ?? 0),
+      commissionAmount: Number(payout.commission_amount ?? 0),
+      netAmount: Number(payout.net_amount ?? 0),
+      currency: payout.currency ?? "PHP",
+      destinationType: payout.destination_type ?? "gcash",
+      destinationName: payout.destination_name ?? "",
+      destinationAccount: payout.destination_account ?? "",
+      provider: payout.provider ?? getPayoutProviderMode(),
+      providerPayoutId: payout.provider_payout_id ?? null,
+      transferReference: payout.transfer_reference ?? null,
+      status: payout.status ?? "queued",
+      failureReason: payout.failure_reason ?? "",
+      requestedAt: formatFirestoreDateTime(payout.requested_at ?? payout.created_at),
+      processedAt: formatFirestoreDateTime(payout.processed_at),
+      paidAt: formatFirestoreDateTime(payout.paid_at),
+    }))
+    .sort((a, b) => String(b.requestedAt ?? "").localeCompare(String(a.requestedAt ?? "")));
 }
 
 async function buildDispatchPaymentSummary(dispatch, dispatchDetails = null) {
@@ -826,6 +1408,12 @@ async function buildDispatchPaymentSummary(dispatch, dispatchDetails = null) {
     commissionAmount,
     commissionRate,
     subscriptionStatus,
+    paymentStatus: "system_received",
+    payoutStatus: "auto_transferred",
+    payoutTransferredAt: null,
+    transferReference: `SOT-${dispatch.id ?? Date.now()}`,
+    creditBalanceAfter: null,
+    paymentMethod: dispatch.payment_method ?? "soteria_credits",
   };
 }
 
@@ -857,12 +1445,17 @@ function getAgentBalanceProofStatus(agentProfile) {
   const status = agentProfile.balance_proof_status ?? "missing";
   const isApproved = status === "approved" && !isExpired;
   const tier = agentProfile.wallet_readiness_tier ?? null;
+  const cashAssistEnabled = Boolean(agentProfile.cash_assist_enabled);
+  const cashAssistReady = isApproved && cashAssistEnabled;
 
   return {
     hasProof: Boolean(agentProfile.balance_proof_asset?.url),
     isApproved,
     isExpired,
-    canGoOnline: isApproved,
+    canGoOnline: true,
+    cashAssistEligible: isApproved,
+    cashAssistEnabled,
+    cashAssistReady,
     status,
     tier,
     tierLabel:
@@ -1099,15 +1692,63 @@ function canonicalizeServiceType(value) {
   return normalized;
 }
 
+function canonicalizeResponderServiceType(value) {
+  const normalized = normalizeServiceType(value);
+
+  if (!normalized) {
+    return "";
+  }
+
+  const canonical = canonicalizeServiceType(normalized);
+
+  if (
+    canonical === "transport" ||
+    normalized.includes("towing") ||
+    normalized.includes("tow truck") ||
+    normalized.includes("transport rescue") ||
+    normalized.includes("transport")
+  ) {
+    return "transport";
+  }
+
+  if (
+    canonical === "repair" ||
+    normalized.includes("mechanic") ||
+    normalized.includes("vulcaniz") ||
+    normalized.includes("electrical") ||
+    normalized.includes("electric") ||
+    normalized.includes("battery") ||
+    normalized.includes("roadside")
+  ) {
+    return "repair";
+  }
+
+  return "";
+}
+
 function getAgentServiceTypes(agent) {
-  const rawValues = Array.isArray(agent?.service_types) && agent.service_types.length > 0
-    ? agent.service_types
-    : [agent?.service_type];
+  const rawValues = [
+    ...(Array.isArray(agent?.service_types) ? agent.service_types : []),
+    ...(Array.isArray(agent?.serviceTypes) ? agent.serviceTypes : []),
+    ...(Array.isArray(agent?.service_categories) ? agent.service_categories : []),
+    ...(Array.isArray(agent?.serviceCategories) ? agent.serviceCategories : []),
+    agent?.service_type,
+    agent?.serviceType,
+    agent?.serviceCategory,
+    agent?.service_category,
+    agent?.category,
+    ...(Array.isArray(agent?.services) ? agent.services : []),
+    ...(Array.isArray(agent?.capabilities) ? agent.capabilities : []),
+    agent?.business_name,
+    agent?.businessName,
+    agent?.organization_name,
+    agent?.organizationName,
+  ];
 
   return Array.from(
     new Set(
       rawValues
-        .map((value) => canonicalizeServiceType(value))
+        .map((value) => canonicalizeResponderServiceType(value))
         .filter(Boolean),
     ),
   );
@@ -1241,25 +1882,7 @@ function hasActiveSubscription(user) {
 }
 
 function getMotoristSearchRadiusKm(user) {
-  if (!hasActiveSubscription(user)) {
-    return 1;
-  }
-
-  const plan = normalizeSubscriptionPlan(user?.subscription_plan);
-
-  if (plan === "monthly") {
-    return 5;
-  }
-
-  if (plan === "six_months") {
-    return 10;
-  }
-
-  if (plan === "annual") {
-    return 20;
-  }
-
-  return 5;
+  return 50;
 }
 
 function normalizePaymentStatus(value) {
@@ -1595,10 +2218,11 @@ async function syncConfirmedSubscriptionPaymentForUser(user, plan, source = "adm
 }
 
 async function buildAdminEarningsSummary() {
-  const [users, subscriptionPayments, dispatches] = await Promise.all([
+  const [users, subscriptionPayments, dispatches, responderPayouts] = await Promise.all([
     getDocuments(collections.users),
     getDocuments(collections.subscriptionPayments),
     getDocuments(collections.dispatches),
+    getDocuments("responder_payouts"),
   ]);
 
   const activeMotorists = users.filter(
@@ -1696,6 +2320,20 @@ async function buildAdminEarningsSummary() {
       .reduce((sum, dispatch) => sum + dispatch.commissionAmount, 0),
   );
 
+  const responderPayoutTotal = roundCurrency(
+    responderPayouts.reduce((sum, payout) => sum + Number(payout.net_amount ?? 0), 0),
+  );
+  const paidResponderPayoutTotal = roundCurrency(
+    responderPayouts
+      .filter((payout) => payout.status === "paid")
+      .reduce((sum, payout) => sum + Number(payout.net_amount ?? 0), 0),
+  );
+  const pendingResponderPayoutTotal = roundCurrency(
+    responderPayouts
+      .filter((payout) => payout.status !== "paid")
+      .reduce((sum, payout) => sum + Number(payout.net_amount ?? 0), 0),
+  );
+
   return {
     totalRevenue: roundCurrency(subscriptionRevenue + serviceCommissionRevenue),
     subscriptionRevenue,
@@ -1709,6 +2347,11 @@ async function buildAdminEarningsSummary() {
     monthlySubscriptionStats,
     unsubscribedMotorists,
     completedCommissionDispatchCount: commissionRows.length,
+    responderPayoutTotal,
+    paidResponderPayoutTotal,
+    pendingResponderPayoutTotal,
+    responderPayoutCount: responderPayouts.length,
+    paidResponderPayoutCount: responderPayouts.filter((payout) => payout.status === "paid").length,
     commissionPolicy: {
       freeMotoristRate: 0.2,
       paidMotoristRate: 0.05,
@@ -1752,7 +2395,7 @@ async function resolveForumAuthor(userId, role) {
   return {
     id: user.id,
     role: normalizedRole,
-    name: user.full_name || user.username || "KalsadaKonek User",
+    name: user.full_name || user.username || "Soteria User",
   };
 }
 
@@ -1789,7 +2432,7 @@ async function listForumThreads() {
         body: thread.body ?? "",
         topic: normalizeForumTopic(thread.topic),
         authorUserId: thread.author_user_id ?? "",
-        authorName: thread.author_name ?? "KalsadaKonek User",
+        authorName: thread.author_name ?? "Soteria User",
         authorRole: normalizeForumRole(thread.author_role),
         createdAt: formatFirestoreDateTime(thread.created_at),
         lastActivityAt: formatFirestoreDateTime(thread.last_activity_at ?? thread.updated_at ?? thread.created_at),
@@ -1936,6 +2579,10 @@ async function createEmergencyDispatchRecord(payload) {
     service_amount: null,
     commission_amount: null,
     commission_rate: null,
+    payment_status: null,
+    payout_status: null,
+    payout_transferred_at: null,
+    transfer_reference: null,
     motorist_subscription_status: activeSubscription ? "active" : "inactive",
   });
 
@@ -1953,6 +2600,54 @@ app.get("/api/repair-shops", async (_request, response, next) => {
   try {
     const repairShops = await getDocuments(collections.repairShops);
     response.json(repairShops.map(normalizeRepairShop));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/repair-shops", async (request, response, next) => {
+  try {
+    const payload = normalizeRepairShopPayload(request.body ?? {});
+    const id = await createDocument(collections.repairShops, payload);
+    const shop = await getDocument(collections.repairShops, id);
+    response.status(201).json(normalizeRepairShop(shop));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/repair-shops/:shopId", async (request, response, next) => {
+  try {
+    const { shopId } = request.params;
+    const existing = await getDocument(collections.repairShops, shopId);
+    if (!existing) {
+      response.status(404).json({ error: "Repair shop not found." });
+      return;
+    }
+
+    const payload = normalizeRepairShopPayload({
+      ...normalizeRepairShop(existing),
+      ...request.body,
+    });
+    await updateDocument(collections.repairShops, shopId, payload);
+    const shop = await getDocument(collections.repairShops, shopId);
+    response.json(normalizeRepairShop(shop));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/repair-shops/:shopId", async (request, response, next) => {
+  try {
+    const { shopId } = request.params;
+    const existing = await getDocument(collections.repairShops, shopId);
+    if (!existing) {
+      response.status(404).json({ error: "Repair shop not found." });
+      return;
+    }
+
+    await deleteDocument(collections.repairShops, shopId);
+    response.json({ id: shopId, deleted: true });
   } catch (error) {
     next(error);
   }
@@ -2008,6 +2703,7 @@ app.post("/api/users/login", async (request, response, next) => {
       subscriptionExpiresAt: user.subscription_expires_at
         ? formatFirestoreDate(user.subscription_expires_at)
         : null,
+      soteriaCreditBalance: readSoteriaCreditBalance(user),
     });
   } catch (error) {
     next(error);
@@ -2098,9 +2794,6 @@ app.post("/api/agents/login", async (request, response, next) => {
       return;
     }
     const balanceProof = getAgentBalanceProofStatus(agentProfile);
-    if (!balanceProof.canGoOnline && agentProfile.is_available) {
-      await updateAgentProfileByUserId(user.id, { is_available: false });
-    }
 
     response.json({
       id: user.id,
@@ -2249,12 +2942,19 @@ app.patch("/api/dispatches/:dispatchId/status", async (request, response, next) 
         dispatchDetails,
       );
 
-      updateData.completed_at = serverTimestamp();
+      updateData.dispatch_status = "payment_pending";
       updateData.total_amount = payment.totalAmount;
       updateData.service_amount = payment.serviceAmount;
       updateData.commission_amount = payment.commissionAmount;
       updateData.commission_rate = payment.commissionRate;
       updateData.motorist_subscription_status = payment.subscriptionStatus;
+      updateData.payment_status = "awaiting_motorist_payment";
+      updateData.payment_method = null;
+      updateData.payout_status = "pending";
+      updateData.payout_transferred_at = null;
+      updateData.transfer_reference = payment.transferReference;
+      updateData.credit_balance_after = null;
+      updateData.service_completed_at = serverTimestamp();
     }
 
     await updateDocument(collections.dispatches, dispatchId, updateData);
@@ -2262,7 +2962,7 @@ app.patch("/api/dispatches/:dispatchId/status", async (request, response, next) 
     // Update emergency report status
     if (dispatch.emergency_report_id) {
       const reportStatus =
-        status === "completed" ? "completed" :
+        status === "completed" ? "awaiting_payment" :
         status === "cancelled" ? "cancelled" :
         (status === "accepted" || status === "arrived") ? "in_progress" : "matched";
 
@@ -2271,7 +2971,134 @@ app.patch("/api/dispatches/:dispatchId/status", async (request, response, next) 
       });
     }
 
-    response.json({ id: dispatchId, dispatch_status: status });
+    response.json({ id: dispatchId, dispatch_status: updateData.dispatch_status });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/dispatches/:dispatchId/payment", async (request, response, next) => {
+  try {
+    const { dispatchId } = request.params;
+    const { paymentMethod = "soteria_credits" } = request.body ?? {};
+    const normalizedPaymentMethod = paymentMethod === "online_payment" ? "online_payment" : "soteria_credits";
+
+    const dispatch = await getDocument(collections.dispatches, dispatchId);
+    if (!dispatch) {
+      response.status(404).json({ error: "Dispatch not found." });
+      return;
+    }
+
+    if (dispatch.dispatch_status === "completed") {
+      response.status(409).json({ error: "This service has already been paid and completed." });
+      return;
+    }
+
+    if (dispatch.dispatch_status !== "payment_pending") {
+      response.status(400).json({ error: "This dispatch is not waiting for motorist payment." });
+      return;
+    }
+
+    const dispatchDetails = await buildDispatchDetails(dispatch);
+    const payment = await buildDispatchPaymentSummary(dispatch, dispatchDetails);
+
+    if (normalizedPaymentMethod === "online_payment") {
+      const existingPendingPayments = (await getDocuments("service_payments", { dispatch_id: dispatchId }))
+        .filter((item) => item.provider === "paymongo" && item.status === "pending_payment");
+      const existingPayment = existingPendingPayments[0] ?? null;
+
+      if (existingPayment?.payment_url) {
+        response.status(202).json({
+          id: dispatchId,
+          dispatch_status: dispatch.dispatch_status,
+          paymentRequired: true,
+          paymentMethod: normalizedPaymentMethod,
+          paymentUrl: existingPayment.payment_url,
+          servicePaymentId: existingPayment.id,
+          amount: Number(existingPayment.amount ?? payment.totalAmount),
+        });
+        return;
+      }
+
+      const reference = `SOT-SVC-${dispatchId}-${Date.now()}`;
+      const link = await createPayMongoServiceLink({
+        amount: payment.totalAmount,
+        dispatchId,
+        reference,
+      });
+      const servicePaymentId = await createDocument("service_payments", {
+        dispatch_id: dispatchId,
+        motorist_user_id: dispatchDetails.motorist?.id ?? "",
+        responder_user_id: dispatchDetails.agent?.id ?? "",
+        amount: payment.totalAmount,
+        currency: "PHP",
+        status: "pending_payment",
+        provider: "paymongo",
+        provider_link_id: link.providerLinkId,
+        provider_reference_number: link.providerReferenceNumber,
+        provider_status: link.status,
+        payment_url: link.paymentUrl,
+        reference,
+        created_at: serverTimestamp(),
+        paid_at: null,
+      });
+
+      await updateDocument(collections.dispatches, dispatchId, {
+        payment_status: "provider_pending",
+        payment_method: "online_payment",
+        service_payment_id: servicePaymentId,
+      });
+
+      response.status(202).json({
+        id: dispatchId,
+        dispatch_status: dispatch.dispatch_status,
+        paymentRequired: true,
+        paymentMethod: normalizedPaymentMethod,
+        paymentUrl: link.paymentUrl,
+        servicePaymentId,
+        amount: payment.totalAmount,
+      });
+      return;
+    }
+
+    if (!dispatchDetails.motorist?.id) {
+      response.status(400).json({ error: "Motorist account is required before paying with Soteria Credits." });
+      return;
+    }
+
+    const motorist = await getDocument(collections.users, dispatchDetails.motorist.id);
+    const debit = await deductSoteriaCredits(motorist, payment.totalAmount, "service_payment", {
+      dispatchId,
+      commissionAmount: payment.commissionAmount,
+      responderPayout: payment.serviceAmount,
+    });
+
+    await updateDocument(collections.dispatches, dispatchId, {
+      dispatch_status: "completed",
+      completed_at: serverTimestamp(),
+      payment_status: "system_received",
+      payment_method: "soteria_credits",
+      payout_status: "processing",
+      payout_transferred_at: null,
+      transfer_reference: payment.transferReference,
+      credit_balance_after: debit.balance,
+    });
+
+    if (dispatch.emergency_report_id) {
+      await updateDocument(collections.emergencyReports, dispatch.emergency_report_id, {
+        report_status: "completed",
+      });
+    }
+
+    await queueAndProcessResponderPayout(dispatch, dispatchDetails, payment);
+
+    const updatedDispatch = await getDocument(collections.dispatches, dispatchId);
+    response.json({
+      id: dispatchId,
+      dispatch_status: "completed",
+      creditBalance: debit.balance,
+      dispatch: serializeDispatchDetails(await buildDispatchDetails(updatedDispatch)),
+    });
   } catch (error) {
     next(error);
   }
@@ -2577,9 +3404,136 @@ app.get("/api/admin/earnings", async (_request, response, next) => {
   }
 });
 
+app.get("/api/admin/responder-payouts", async (_request, response, next) => {
+  try {
+    response.json(await listResponderPayouts());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/users/:userId/credits", async (request, response, next) => {
+  try {
+    const { userId } = request.params;
+    const user = await getDocument(collections.users, userId);
+
+    if (!user || user.role !== "motorist") {
+      response.status(404).json({ error: "Motorist user not found." });
+      return;
+    }
+
+    response.json(formatSoteriaCredits(user));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/users/:userId/credits/topups", async (request, response, next) => {
+  try {
+    const { userId } = request.params;
+    const amount = normalizeCurrencyInput(request.body?.amount);
+    const user = await getDocument(collections.users, userId);
+
+    if (!user || user.role !== "motorist") {
+      response.status(404).json({ error: "Motorist user not found." });
+      return;
+    }
+
+    if (amount <= 0) {
+      response.status(400).json({ error: "A valid top-up amount is required." });
+      return;
+    }
+
+    const reference = `SOT-TOP-${userId}-${Date.now()}`;
+    const link = await createPayMongoTopUpLink({ user, amount, reference });
+    const topUpId = await createDocument("soteria_credit_topups", {
+      user_id: user.id,
+      payer_name: user.full_name ?? user.username ?? "Motorist",
+      payer_phone: user.phone ?? "",
+      amount,
+      credits_amount: amount,
+      currency: "PHP",
+      status: "pending_payment",
+      provider: "paymongo",
+      provider_link_id: link.providerLinkId,
+      provider_reference_number: link.providerReferenceNumber,
+      provider_status: link.status,
+      payment_url: link.paymentUrl,
+      reference,
+      created_at: serverTimestamp(),
+      credited_at: null,
+    });
+
+    response.status(201).json({
+      id: topUpId,
+      userId,
+      amount,
+      balance: readSoteriaCreditBalance(user),
+      status: "pending_payment",
+      source: "paymongo",
+      provider: "paymongo",
+      paymentUrl: link.paymentUrl,
+      reference,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/payments/webhooks/paymongo", async (request, response, next) => {
+  try {
+    const rawBody = request.body;
+    const signature = request.get("Paymongo-Signature");
+
+    if (!verifyPayMongoWebhookSignature(rawBody, signature)) {
+      response.status(401).json({ error: "Invalid PayMongo webhook signature." });
+      return;
+    }
+
+    const payloadText = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody ?? "{}");
+    const event = JSON.parse(payloadText);
+    const eventId = event?.data?.id ?? "";
+    const eventType = event?.data?.attributes?.type ?? "";
+    const eventData = event?.data?.attributes?.data ?? null;
+
+    if (eventId) {
+      const existingEvents = await getDocuments("payment_webhook_events", { provider_event_id: eventId });
+      if (existingEvents.length > 0) {
+        response.status(200).json({ received: true, duplicate: true });
+        return;
+      }
+    }
+
+    let result = { fulfilled: false, reason: "ignored_event" };
+    if (eventType === "link.payment.paid" && eventData?.type === "link") {
+      const results = [
+        await creditPaidTopUpFromPayMongo(eventData),
+        await activatePaidSubscriptionFromPayMongo(eventData),
+        await completePaidServiceFromPayMongo(eventData),
+      ];
+      result = {
+        fulfilled: results.some((item) => item.credited || item.fulfilled),
+        results,
+      };
+    }
+
+    await createDocument("payment_webhook_events", {
+      provider: "paymongo",
+      provider_event_id: eventId,
+      event_type: eventType,
+      result,
+      created_at: serverTimestamp(),
+    });
+
+    response.status(200).json({ received: true, result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/subscription-payments", async (request, response, next) => {
   try {
-    const { userId, subscriptionPlan, referenceNote = "" } = request.body ?? {};
+    const { userId, subscriptionPlan, paymentMethod = "soteria_credits" } = request.body ?? {};
     const normalizedPlan = normalizeSubscriptionPlan(subscriptionPlan);
 
     if (!userId || !normalizedPlan) {
@@ -2595,19 +3549,162 @@ app.post("/api/subscription-payments", async (request, response, next) => {
       return;
     }
 
+    const expiryDate = calculateSubscriptionExpiry(normalizedPlan);
+    const amount = getSubscriptionOfferAmount(normalizedPlan);
+
+    if (paymentMethod === "online_payment") {
+      const reference = `SOT-SUB-${user.id}-${Date.now()}`;
+      const link = await createPayMongoSubscriptionLink({
+        amount,
+        plan: normalizedPlan,
+        reference,
+      });
+      const paymentId = await createDocument(collections.subscriptionPayments, {
+        user_id: user.id,
+        payer_name: user.full_name,
+        payer_phone: user.phone ?? "",
+        subscription_plan: normalizedPlan,
+        amount,
+        reference_note: "Awaiting PayMongo online payment.",
+        status: "pending",
+        reviewed_at: null,
+        source: "online_payment",
+        provider: "paymongo",
+        provider_link_id: link.providerLinkId,
+        provider_reference_number: link.providerReferenceNumber,
+        provider_status: link.status,
+        payment_url: link.paymentUrl,
+        reference,
+      });
+
+      const payment = (await listSubscriptionPayments()).find((item) => item.id === paymentId) ?? null;
+      response.status(202).json({
+        ...payment,
+        paymentMethod: "online_payment",
+        paymentUrl: link.paymentUrl,
+        reference,
+      });
+      return;
+    }
+
+    const debit = await deductSoteriaCredits(user, amount, "subscription_payment", {
+      subscriptionPlan: normalizedPlan,
+    });
+
     const paymentId = await createDocument(collections.subscriptionPayments, {
       user_id: user.id,
       payer_name: user.full_name,
       payer_phone: user.phone ?? "",
       subscription_plan: normalizedPlan,
-      amount: getSubscriptionOfferAmount(normalizedPlan),
-      reference_note: String(referenceNote ?? "").trim(),
-      status: "pending",
-      reviewed_at: null,
+      amount,
+      reference_note: "Paid with Soteria Credits.",
+      status: "confirmed",
+      reviewed_at: serverTimestamp(),
+      source: "soteria_credits",
+      credit_balance_after: debit.balance,
+    });
+
+    await updateDocument(collections.users, user.id, {
+      subscription_status: "active",
+      subscription_plan: normalizedPlan,
+      subscription_activated_at: serverTimestamp(),
+      subscription_expires_at: expiryDate,
     });
 
     const payment = (await listSubscriptionPayments()).find((item) => item.id === paymentId) ?? null;
-    response.status(201).json(payment);
+    response.status(201).json({
+      ...payment,
+      creditBalance: debit.balance,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/dev/paymongo/subscription-payments/:paymentId/mark-paid", async (request, response, next) => {
+  try {
+    if (process.env.NODE_ENV === "production" || getPayMongoConfig().signatureMode !== "te") {
+      response.status(404).json({ error: "Development payment simulation is not available." });
+      return;
+    }
+
+    const { paymentId } = request.params;
+    const payment = await getDocument(collections.subscriptionPayments, paymentId);
+    if (!payment) {
+      response.status(404).json({ error: "Subscription payment not found." });
+      return;
+    }
+
+    if (payment.provider !== "paymongo" || payment.source !== "online_payment") {
+      response.status(400).json({ error: "Only pending PayMongo online subscription payments can be simulated." });
+      return;
+    }
+
+    const result = await activatePaidSubscriptionFromPayMongo({
+      id: payment.provider_link_id ?? "",
+      attributes: {
+        reference_number: payment.provider_reference_number ?? "",
+        remarks: payment.reference ?? "",
+        status: "paid",
+      },
+    });
+
+    const updatedPayment = (await listSubscriptionPayments()).find((item) => item.id === paymentId) ?? null;
+    const updatedUser = await getDocument(collections.users, payment.user_id);
+    response.json({
+      simulated: true,
+      result,
+      payment: updatedPayment,
+      subscriptionStatus: hasActiveSubscription(updatedUser) ? "active" : "inactive",
+      subscriptionPlan: normalizeSubscriptionPlan(updatedUser?.subscription_plan),
+      subscriptionExpiresAt: updatedUser?.subscription_expires_at
+        ? formatFirestoreDate(updatedUser.subscription_expires_at)
+        : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/dev/paymongo/service-payments/:paymentId/mark-paid", async (request, response, next) => {
+  try {
+    if (process.env.NODE_ENV === "production" || getPayMongoConfig().signatureMode !== "te") {
+      response.status(404).json({ error: "Development payment simulation is not available." });
+      return;
+    }
+
+    const { paymentId } = request.params;
+    const payment = await getDocument("service_payments", paymentId);
+    if (!payment) {
+      response.status(404).json({ error: "Service payment not found." });
+      return;
+    }
+
+    if (payment.provider !== "paymongo") {
+      response.status(400).json({ error: "Only pending PayMongo service payments can be simulated." });
+      return;
+    }
+
+    const result = await completePaidServiceFromPayMongo({
+      id: payment.provider_link_id ?? "",
+      attributes: {
+        reference_number: payment.provider_reference_number ?? "",
+        remarks: payment.reference ?? "",
+        status: "paid",
+      },
+    });
+
+    const updatedPayment = await getDocument("service_payments", paymentId);
+    const updatedDispatch = payment.dispatch_id
+      ? await getDocument(collections.dispatches, payment.dispatch_id)
+      : null;
+
+    response.json({
+      simulated: true,
+      result,
+      payment: updatedPayment,
+      dispatch: updatedDispatch ? serializeDispatchDetails(await buildDispatchDetails(updatedDispatch)) : null,
+    });
   } catch (error) {
     next(error);
   }
@@ -3103,7 +4200,7 @@ app.patch("/api/admin/agent-balance-proofs/:agentId", async (request, response, 
       balance_proof_expires_at: expiryDate,
       balance_proof_approved_by: String(approvedBy).trim(),
       balance_proof_rejection_reason: status === "rejected" ? String(rejectionReason).trim() : "",
-      is_available: false,
+      cash_assist_enabled: status === "approved" ? Boolean(profile.cash_assist_enabled) : false,
       updated_at: serverTimestamp(),
     });
 
@@ -3287,17 +4384,6 @@ app.put("/api/agents/:agentId/availability", async (request, response, next) => 
       return;
     }
 
-    if (isAvailable) {
-      const balanceProof = getAgentBalanceProofStatus(profile);
-      if (!balanceProof.canGoOnline) {
-        await updateAgentProfileByUserId(agentId, { is_available: false });
-        response.status(403).json({
-          error: "A valid wallet readiness verification is required before going online.",
-        });
-        return;
-      }
-    }
-
     await updateAgentProfileByUserId(agentId, {
       is_available: isAvailable,
     });
@@ -3383,6 +4469,55 @@ app.put("/api/agents/:agentId/profile/payment", async (request, response, next) 
   }
 });
 
+app.put("/api/agents/:agentId/cash-assist", async (request, response, next) => {
+  try {
+    const { agentId } = request.params;
+    const { enabled } = request.body ?? {};
+    const user = await getDocument(collections.users, agentId);
+    const profile = await getAgentProfileByUserId(agentId);
+
+    if (typeof enabled !== "boolean") {
+      response.status(400).json({ error: "enabled must be a boolean." });
+      return;
+    }
+
+    if (!user || user.role !== "agent" || !profile) {
+      response.status(404).json({ error: "Responder profile not found." });
+      return;
+    }
+
+    const balanceProof = getAgentBalanceProofStatus(profile);
+    if (enabled && !balanceProof.cashAssistEligible) {
+      response.status(403).json({
+        error: "This wallet-readiness badge has been retired because payments are now processed through Soteria.",
+      });
+      return;
+    }
+
+    await updateAgentProfileByUserId(agentId, {
+      cash_assist_enabled: enabled,
+      updated_at: serverTimestamp(),
+    });
+
+    const updatedProfile = await getAgentProfileByUserId(agentId);
+    response.json({
+      userId: agentId,
+      fullName: user.full_name ?? "",
+      phone: user.phone ?? "",
+      businessName: updatedProfile?.business_name ?? "",
+      organizationName: updatedProfile?.organization_name ?? "",
+      serviceArea: updatedProfile?.service_area ?? "",
+      gcashName: updatedProfile?.payout_gcash_name ?? "",
+      gcashNumber: updatedProfile?.payout_gcash_number ?? "",
+      payoutNotes: updatedProfile?.payout_notes ?? "",
+      liabilityAcknowledged: Boolean(updatedProfile?.liability_acknowledged),
+      balanceProof: getAgentBalanceProofStatus(updatedProfile),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/agents/:agentId/balance-proof", async (request, response, next) => {
   try {
     const { agentId } = request.params;
@@ -3409,7 +4544,7 @@ app.post("/api/agents/:agentId/balance-proof", async (request, response, next) =
       balance_proof_expires_at: null,
       balance_proof_approved_by: null,
       balance_proof_rejection_reason: "",
-      is_available: false,
+      cash_assist_enabled: false,
       updated_at: serverTimestamp(),
     });
 
@@ -3438,7 +4573,7 @@ app.get("/api/agents/available", async (_request, response, next) => {
     const agents = (await getDocumentsFromCollections(responderProfileCollections, {
       is_available: true,
       verification_status: "approved"
-    })).filter((agent) => getAgentBalanceProofStatus(agent).canGoOnline);
+    }));
 
     // Fetch user data for each agent
     const results = await Promise.all(agents.map(async (agent) => {
@@ -3452,6 +4587,7 @@ app.get("/api/agents/available", async (_request, response, next) => {
           currentLongitude: agent.current_longitude,
           isAvailable: agent.is_available,
           verificationStatus: agent.verification_status,
+          cashAssistReady: getAgentBalanceProofStatus(agent).cashAssistReady,
         };
       } catch (error) {
         console.error(`Error fetching user for responder ${agent.user_id}:`, error);
@@ -3685,9 +4821,9 @@ app.get("/api/requests/:requestId", async (request, response, next) => {
 });
 
 /**
- * GET /api/agents/nearby?lat=X&lng=Y&radius=20
+ * GET /api/agents/nearby?lat=X&lng=Y&radius=50
  * Get nearby online agents for motorist to find rescue
- * Radius in kilometers (default 20)
+ * Radius in kilometers (default 50). Subscriptions do not restrict access range.
  */
 app.get("/api/agents/nearby", async (request, response, next) => {
   try {
@@ -3696,7 +4832,7 @@ app.get("/api/agents/nearby", async (request, response, next) => {
       return;
     }
 
-    const { lat, lng, radius = 20, serviceType = null, userId = null } = request.query;
+    const { lat, lng, radius = 50, serviceType = null, userId = null } = request.query;
 
     if (!lat || !lng) {
       response.status(400).json({ error: "lat and lng query parameters are required." });
@@ -3717,7 +4853,7 @@ app.get("/api/agents/nearby", async (request, response, next) => {
     const agents = (await getDocumentsFromCollections(responderProfileCollections, {
       is_available: true,
       verification_status: "approved",
-    })).filter((agent) => getAgentBalanceProofStatus(agent).canGoOnline);
+    }));
 
     const nearbyAgents = await Promise.all(
       agents
@@ -3735,6 +4871,7 @@ app.get("/api/agents/nearby", async (request, response, next) => {
           );
           const user = agent.user_id ? await getDocument(collections.users, agent.user_id) : null;
           const ranking = rankNearbyAgent(serviceType, agent);
+          const balanceProof = getAgentBalanceProofStatus(agent);
 
           return {
             id: agent.user_id ?? agent.id,
@@ -3747,6 +4884,9 @@ app.get("/api/agents/nearby", async (request, response, next) => {
             exactServiceMatch: ranking.exactServiceMatch,
             compatibleServiceMatch: ranking.compatibleServiceMatch,
             lastLocationUpdateMs: ranking.lastLocationUpdateMs,
+            cashAssistReady: balanceProof.cashAssistReady,
+            cashAssistTier: balanceProof.tier,
+            cashAssistTierLabel: balanceProof.tierLabel,
           };
         }),
     );
@@ -3813,7 +4953,7 @@ app.use((error, _request, response, _next) => {
 
 // Start server
 app.listen(port, () => {
-  console.log(`🚀 Firebase KalsadaKonek API server running on port ${port}`);
+  console.log(`🚀 Firebase Soteria API server running on port ${port}`);
 });
 
 export default app;

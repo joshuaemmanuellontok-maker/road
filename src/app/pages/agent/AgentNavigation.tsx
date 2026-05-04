@@ -46,6 +46,11 @@ function mapAgentStatus(dispatchStatus: string): AgentJobStatus {
   return "en-route";
 }
 
+function parsePesoAmount(value: string): number {
+  const amount = Number(value.replace(/[^0-9.]/g, ""));
+  return Number.isFinite(amount) ? amount : 0;
+}
+
 export function AgentNavigation() {
   const { dispatchId } = useParams();
   const navigate = useNavigate();
@@ -176,16 +181,10 @@ export function AgentNavigation() {
 
   const handleCompleteJob = async () => {
     try {
-      await updateDispatchStatus(dispatchId!, "completed");
+      await updateDispatchStatus(dispatchId!, "completed", parsePesoAmount(estimatedFee));
+      const updatedDispatch = await fetchDispatchDetails(dispatchId!);
       setStatus("completed");
-      setDispatchData((current) =>
-        current
-          ? {
-              ...current,
-              dispatchStatus: "completed",
-            }
-          : current,
-      );
+      setDispatchData(updatedDispatch);
     } catch (error) {
       console.error("Failed to complete job:", error);
       alert("Failed to complete job");
@@ -301,7 +300,7 @@ export function AgentNavigation() {
             </div>
             <h1 className="text-2xl font-bold text-white">Job marked as completed</h1>
             <p className="mt-2 text-sm text-gray-300">
-              The motorist can now see the completion status and submit a service review.
+              Soteria deducted the motorist credits, kept commission, and started the automated net payout.
             </p>
 
             <div className="mt-6 rounded-2xl border border-gray-700 bg-gray-900/70 p-5">
@@ -320,17 +319,28 @@ export function AgentNavigation() {
                   <span className="font-medium text-white">{formatTime(elapsedTime)}</span>
                 </div>
                 <div className="flex justify-between gap-4">
-                  <span className="text-gray-400">Final fee</span>
+                  <span className="text-gray-400">Motorist paid</span>
                   <span className="font-medium text-[#ff9a7a]">{estimatedFee}</span>
                 </div>
+                {dispatchData.payment ? (
+                  <>
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-400">Soteria commission</span>
+                      <span className="font-medium text-white">PHP {dispatchData.payment.commissionAmount}</span>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <span className="text-gray-400">Responder payout</span>
+                      <span className="font-medium text-green-300">PHP {dispatchData.payment.serviceAmount}</span>
+                    </div>
+                  </>
+                ) : null}
               </div>
             </div>
 
             {!feedbackSubmitted ? (
               <div className="mt-5 rounded-2xl border border-[#ff6b3d]/50 bg-[#ff6b3d]/15 p-4">
                 <p className="text-sm text-gray-100">
-                  Please review the motorist before returning to the dashboard, especially payment
-                  and cooperation during the service.
+                  Please review the motorist before returning to the dashboard. Payment is processed through Soteria automatically.
                 </p>
                 <button
                   onClick={() => setShowFeedbackDialog(true)}
@@ -554,8 +564,7 @@ export function AgentNavigation() {
 
               <div className="rounded-lg border border-yellow-500/50 bg-yellow-900/20 p-3">
                 <p className="text-sm text-gray-300">
-                  <strong className="text-white">Payment:</strong> Collect payment directly via
-                  cash or mobile wallet after completing the service.
+                  <strong className="text-white">Payment:</strong> Motorist service payment can use Soteria Credits or direct online payment. Commission is deducted automatically and your net payout is transferred to your responder wallet.
                 </p>
               </div>
 

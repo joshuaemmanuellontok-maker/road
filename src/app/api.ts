@@ -108,10 +108,31 @@ export interface UserSummary {
   subscriptionPlan?: "monthly" | "six_months" | "annual" | null;
   subscriptionActivatedAt?: string | null;
   subscriptionExpiresAt?: string | null;
+  soteriaCreditBalance?: number;
   communityCoins?: number;
   communityLifetimeCoins?: number;
   lastCommunityRewardAt?: string | null;
 }
+
+export interface RepairShop {
+  id: string;
+  name: string;
+  ownerName: string;
+  category: "mechanical" | "vulcanizing" | "towing" | "electrical";
+  rating: number;
+  distanceKm: number;
+  address: string;
+  responseTime: string;
+  openNow: boolean;
+  phone: string;
+  email: string;
+  status: "active" | "inactive";
+  latitude: number;
+  longitude: number;
+  services: string[];
+}
+
+export type RepairShopInput = Omit<RepairShop, "id">;
 
 export interface AuthPayload {
   username: string;
@@ -173,6 +194,7 @@ export interface SubscriptionPayment {
   status: "pending" | "confirmed" | "rejected";
   submittedAt: string | null;
   reviewedAt: string | null;
+  creditBalance?: number;
 }
 
 export interface AdminEarningsSummary {
@@ -406,6 +428,42 @@ function mapUserSummary(payload: unknown): UserSummary {
   };
 }
 
+function readRepairShopCategory(value: unknown): RepairShop["category"] {
+  if (
+    value === "mechanical" ||
+    value === "vulcanizing" ||
+    value === "towing" ||
+    value === "electrical"
+  ) {
+    return value;
+  }
+
+  return "mechanical";
+}
+
+function mapRepairShop(payload: unknown): RepairShop {
+  const row = isRecord(payload) ? payload : {};
+  const services = Array.isArray(row.services) ? row.services.map((item) => readString(item)).filter(Boolean) : [];
+
+  return {
+    id: readString(row.id),
+    name: readString(row.name),
+    ownerName: readString(row.ownerName ?? row.owner_name),
+    category: readRepairShopCategory(row.category ?? row.service_type),
+    rating: Number(row.rating ?? 0),
+    distanceKm: Number(row.distanceKm ?? row.distance_km ?? 0),
+    address: readString(row.address),
+    responseTime: readString(row.responseTime ?? row.response_time, "~15 min"),
+    openNow: Boolean(row.openNow ?? row.open_now ?? row.status === "active"),
+    phone: readString(row.phone ?? row.contact_number),
+    email: readString(row.email),
+    status: row.status === "inactive" ? "inactive" : "active",
+    latitude: Number(row.latitude ?? 0),
+    longitude: Number(row.longitude ?? 0),
+    services,
+  };
+}
+
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
@@ -598,6 +656,33 @@ export function deleteManagedUser(userId: string) {
   });
 }
 
+export async function fetchRepairShops(): Promise<RepairShop[]> {
+  const payload = await apiRequest<unknown>("/repair-shops");
+  return Array.isArray(payload) ? payload.map(mapRepairShop) : [];
+}
+
+export async function createRepairShop(input: RepairShopInput): Promise<RepairShop> {
+  const payload = await apiRequest<unknown>("/repair-shops", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return mapRepairShop(payload);
+}
+
+export async function updateRepairShop(shopId: string, input: RepairShopInput): Promise<RepairShop> {
+  const payload = await apiRequest<unknown>(`/repair-shops/${shopId}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+  return mapRepairShop(payload);
+}
+
+export function deleteRepairShop(shopId: string) {
+  return apiRequest<{ id: string; deleted: boolean }>(`/repair-shops/${shopId}`, {
+    method: "DELETE",
+  });
+}
+
 export async function fetchSubscriptionPayments(): Promise<SubscriptionPayment[]> {
   const payload = await apiRequest<unknown>("/subscription-payments");
   return Array.isArray(payload) ? payload.map(mapSubscriptionPayment) : [];
@@ -724,6 +809,19 @@ export interface DispatchDetails {
   acceptedAt: string | null;
   arrivedAt: string | null;
   completedAt: string | null;
+  payment: {
+    serviceAmount: number;
+    totalAmount: number;
+    commissionAmount: number;
+    commissionRate: number;
+    subscriptionStatus: "active" | "inactive";
+    paymentStatus?: string;
+    payoutStatus?: string;
+    payoutTransferredAt?: string | null;
+    transferReference?: string | null;
+    creditBalanceAfter?: number | null;
+    paymentMethod?: string;
+  } | null;
   motorist: {
     id: string;
     fullName: string;
@@ -787,6 +885,7 @@ export interface DispatchHistoryEntry {
   locationLabel: string;
   issueSummary: string;
   serviceLabel: string;
+  payment: DispatchDetails["payment"];
   dispatch: DispatchDetails | null;
   viewerFeedback: DispatchFeedback | null;
   counterpartFeedback: DispatchFeedback | null;
@@ -854,6 +953,24 @@ export async function fetchDispatchDetails(dispatchId: string): Promise<Dispatch
     acceptedAt: readNullableString(row.accepted_at ?? row.acceptedAt),
     arrivedAt: readNullableString(row.arrived_at ?? row.arrivedAt),
     completedAt: readNullableString(row.completed_at ?? row.completedAt),
+    payment: isRecord(row.payment)
+      ? {
+          serviceAmount: Number(row.payment.serviceAmount ?? row.payment.service_amount ?? 0),
+          totalAmount: Number(row.payment.totalAmount ?? row.payment.total_amount ?? 0),
+          commissionAmount: Number(row.payment.commissionAmount ?? row.payment.commission_amount ?? 0),
+          commissionRate: Number(row.payment.commissionRate ?? row.payment.commission_rate ?? 0),
+          subscriptionStatus: row.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          paymentStatus: readString(row.payment.paymentStatus ?? row.payment.payment_status, "system_received"),
+          payoutStatus: readString(row.payment.payoutStatus ?? row.payment.payout_status, "auto_transferred"),
+          payoutTransferredAt: readNullableString(row.payment.payoutTransferredAt ?? row.payment.payout_transferred_at),
+          transferReference: readNullableString(row.payment.transferReference ?? row.payment.transfer_reference),
+          paymentMethod: readString(row.payment.paymentMethod ?? row.payment.payment_method, "soteria_credits"),
+          creditBalanceAfter:
+            row.payment.creditBalanceAfter != null || row.payment.credit_balance_after != null
+              ? Number(row.payment.creditBalanceAfter ?? row.payment.credit_balance_after)
+              : null,
+        }
+      : null,
     motorist: {
       id: readString(row.motorist_id ?? row.motorist?.id),
       fullName: readString(row.motorist_name ?? row.motorist?.fullName),
@@ -873,10 +990,14 @@ export async function fetchDispatchDetails(dispatchId: string): Promise<Dispatch
   };
 }
 
-export async function updateDispatchStatus(dispatchId: string, status: string): Promise<void> {
+export async function updateDispatchStatus(
+  dispatchId: string,
+  status: string,
+  totalAmount?: number,
+): Promise<void> {
   await apiRequest<void>(`/dispatches/${dispatchId}/status`, {
     method: "PATCH",
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status, totalAmount }),
   });
 }
 
@@ -920,6 +1041,24 @@ function mapDispatchHistoryEntry(payload: unknown): DispatchHistoryEntry {
     locationLabel: readString(row.locationLabel ?? row.location_label),
     issueSummary: readString(row.issueSummary ?? row.issue_summary),
     serviceLabel: readString(row.serviceLabel ?? row.service_label),
+    payment: isRecord(row.payment)
+      ? {
+          serviceAmount: Number(row.payment.serviceAmount ?? row.payment.service_amount ?? 0),
+          totalAmount: Number(row.payment.totalAmount ?? row.payment.total_amount ?? 0),
+          commissionAmount: Number(row.payment.commissionAmount ?? row.payment.commission_amount ?? 0),
+          commissionRate: Number(row.payment.commissionRate ?? row.payment.commission_rate ?? 0),
+          subscriptionStatus: row.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          paymentStatus: readString(row.payment.paymentStatus ?? row.payment.payment_status, "system_received"),
+          payoutStatus: readString(row.payment.payoutStatus ?? row.payment.payout_status, "auto_transferred"),
+          payoutTransferredAt: readNullableString(row.payment.payoutTransferredAt ?? row.payment.payout_transferred_at),
+          transferReference: readNullableString(row.payment.transferReference ?? row.payment.transfer_reference),
+          paymentMethod: readString(row.payment.paymentMethod ?? row.payment.payment_method, "soteria_credits"),
+          creditBalanceAfter:
+            row.payment.creditBalanceAfter != null || row.payment.credit_balance_after != null
+              ? Number(row.payment.creditBalanceAfter ?? row.payment.credit_balance_after)
+              : null,
+        }
+      : null,
     dispatch: isRecord(row.dispatch) ? {
       id: readString(row.dispatch.id),
       emergencyReportId: readString(row.dispatch.emergencyReportId ?? row.dispatch.emergency_report_id),
@@ -930,6 +1069,24 @@ function mapDispatchHistoryEntry(payload: unknown): DispatchHistoryEntry {
       acceptedAt: readNullableString(row.dispatch.acceptedAt ?? row.dispatch.accepted_at),
       arrivedAt: readNullableString(row.dispatch.arrivedAt ?? row.dispatch.arrived_at),
       completedAt: readNullableString(row.dispatch.completedAt ?? row.dispatch.completed_at),
+      payment: isRecord(row.dispatch.payment)
+        ? {
+            serviceAmount: Number(row.dispatch.payment.serviceAmount ?? row.dispatch.payment.service_amount ?? 0),
+            totalAmount: Number(row.dispatch.payment.totalAmount ?? row.dispatch.payment.total_amount ?? 0),
+            commissionAmount: Number(row.dispatch.payment.commissionAmount ?? row.dispatch.payment.commission_amount ?? 0),
+            commissionRate: Number(row.dispatch.payment.commissionRate ?? row.dispatch.payment.commission_rate ?? 0),
+            subscriptionStatus: row.dispatch.payment.subscriptionStatus === "active" ? "active" : "inactive",
+            paymentStatus: readString(row.dispatch.payment.paymentStatus ?? row.dispatch.payment.payment_status, "system_received"),
+            payoutStatus: readString(row.dispatch.payment.payoutStatus ?? row.dispatch.payment.payout_status, "auto_transferred"),
+            payoutTransferredAt: readNullableString(row.dispatch.payment.payoutTransferredAt ?? row.dispatch.payment.payout_transferred_at),
+            transferReference: readNullableString(row.dispatch.payment.transferReference ?? row.dispatch.payment.transfer_reference),
+            paymentMethod: readString(row.dispatch.payment.paymentMethod ?? row.dispatch.payment.payment_method, "soteria_credits"),
+            creditBalanceAfter:
+              row.dispatch.payment.creditBalanceAfter != null || row.dispatch.payment.credit_balance_after != null
+                ? Number(row.dispatch.payment.creditBalanceAfter ?? row.dispatch.payment.credit_balance_after)
+                : null,
+          }
+        : null,
       motorist: {
         id: readString(row.dispatch.motorist?.id),
         fullName: readString(row.dispatch.motorist?.fullName ?? row.dispatch.motorist?.full_name),
@@ -1035,6 +1192,10 @@ function mapSubscriptionPayment(payload: unknown): SubscriptionPayment {
         : "pending",
     submittedAt: readNullableString(row.submittedAt ?? row.submitted_at),
     reviewedAt: readNullableString(row.reviewedAt ?? row.reviewed_at),
+    creditBalance:
+      row.creditBalance != null || row.credit_balance != null
+        ? Number(row.creditBalance ?? row.credit_balance)
+        : undefined,
   };
 }
 

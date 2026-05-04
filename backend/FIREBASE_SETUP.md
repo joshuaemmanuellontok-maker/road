@@ -1,10 +1,10 @@
-# Firebase Setup Guide for KalsadaKonek
+# Firebase Setup Guide for Soteria
 
 ## 🚀 Step 1: Create Firebase Project
 
 1. Go to [Firebase Console](https://console.firebase.google.com/)
 2. Click "Create a project" or "Add project"
-3. Name it "KalsadaKonek" (or your preferred name)
+3. Name it "Soteria" (or your preferred name)
 4. Enable Google Analytics (optional but recommended)
 5. Choose your Google Analytics account
 6. Click "Create project"

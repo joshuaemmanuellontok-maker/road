@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import {
   ArrowLeft,
   MessageSquare,
@@ -14,6 +14,7 @@ import {
   createForumThread,
   fetchCommunityProfile,
   fetchForumThreads,
+  getAdminSession,
   type ForumReply,
   type ForumRole,
   type ForumThread,
@@ -43,6 +44,7 @@ const topicLabelMap: Record<ForumTopic, string> = {
 
 export function CommunityForum() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [threads, setThreads] = useState<ForumThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
@@ -54,18 +56,25 @@ export function CommunityForum() {
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replyingThreadId, setReplyingThreadId] = useState<string | null>(null);
   const session = useMemo(() => getStoredUserSession(), []);
+  const adminSession = useMemo(() => getAdminSession(), []);
+  const isAdminMonitor = location.pathname.startsWith("/admin") && adminSession?.role === "admin";
+  const canParticipate = Boolean(session?.id && ["motorist", "agent", "community"].includes(session.role));
 
   useEffect(() => {
-    if (!session?.id || !["motorist", "agent", "community"].includes(session.role)) {
+    if (!canParticipate && !isAdminMonitor) {
       navigate("/community/login");
       return;
     }
 
-    const loadThreads = async () => {
+    let active = true;
+    let visitAwarded = false;
+
+    const loadThreads = async (awardVisit = false) => {
       try {
-        setLoading(true);
+        setLoading((current) => current);
         setErrorMessage("");
-        if (session.role === "community") {
+        if (awardVisit && !visitAwarded && session?.role === "community") {
+          visitAwarded = true;
           const visit = await awardCommunityForumVisit(session.id);
           setStoredUserSession({
             ...session,
@@ -75,16 +84,30 @@ export function CommunityForum() {
           });
         }
         const forumThreads = await fetchForumThreads();
-        setThreads(forumThreads);
+        if (active) {
+          setThreads(forumThreads);
+        }
       } catch (error) {
-        setErrorMessage(error instanceof Error ? error.message : "Failed to load forum discussions.");
+        if (active) {
+          setErrorMessage(error instanceof Error ? error.message : "Failed to load forum discussions.");
+        }
       } finally {
-        setLoading(false);
+        if (active) {
+          setLoading(false);
+        }
       }
     };
 
-    void loadThreads();
-  }, [navigate, session]);
+    void loadThreads(true);
+    const refreshTimer = window.setInterval(() => {
+      void loadThreads(false);
+    }, 5000);
+
+    return () => {
+      active = false;
+      window.clearInterval(refreshTimer);
+    };
+  }, [canParticipate, isAdminMonitor, navigate, session]);
 
   const filteredThreads = useMemo(
     () => threads.filter((thread) => activeTopic === "all" || thread.topic === activeTopic),
@@ -92,13 +115,17 @@ export function CommunityForum() {
   );
 
   const backPath =
-    session?.role === "agent"
+    isAdminMonitor
+      ? "/admin/dashboard"
+      : session?.role === "agent"
       ? "/agent/dashboard"
       : session?.role === "community"
         ? "/community/dashboard"
         : "/user/dashboard";
   const roleLabel =
-    session?.role === "agent"
+    isAdminMonitor
+      ? "Admin"
+      : session?.role === "agent"
       ? "Responder"
       : session?.role === "community"
         ? "Community"
@@ -119,7 +146,7 @@ export function CommunityForum() {
   const handleCreateThread = async (event: FormEvent) => {
     event.preventDefault();
 
-    if (!session?.id || !["motorist", "agent", "community"].includes(session.role)) {
+    if (!session?.id || !canParticipate) {
       return;
     }
 
@@ -156,7 +183,7 @@ export function CommunityForum() {
   };
 
   const handleReplySubmit = async (threadId: string) => {
-    if (!session?.id || !["motorist", "agent", "community"].includes(session.role)) {
+    if (!session?.id || !canParticipate) {
       return;
     }
 
@@ -250,71 +277,91 @@ export function CommunityForum() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-gray-800 bg-gray-800 p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
-              Start A Discussion
-            </h2>
-            <form onSubmit={handleCreateThread} className="mt-4 space-y-4">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-topic">
-                  Topic
-                </label>
-                <select
-                  id="forum-topic"
-                  value={topic}
-                  onChange={(event) => setTopic(event.target.value as ForumTopic)}
-                  className="w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white focus:border-[#ff6b3d] focus:outline-none"
+          {isAdminMonitor ? (
+            <section className="rounded-2xl border border-gray-800 bg-gray-800 p-5">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+                Forum Monitor
+              </h2>
+              <div className="mt-4 grid gap-3">
+                <div className="rounded-xl border border-gray-700 bg-gray-900 p-4">
+                  <p className="text-2xl font-bold text-white">{threads.length}</p>
+                  <p className="text-sm text-gray-400">Visible discussions</p>
+                </div>
+                <div className="rounded-xl border border-gray-700 bg-gray-900 p-4">
+                  <p className="text-2xl font-bold text-white">
+                    {threads.reduce((sum, thread) => sum + thread.replyCount, 0)}
+                  </p>
+                  <p className="text-sm text-gray-400">Total replies</p>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className="rounded-2xl border border-gray-800 bg-gray-800 p-5">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">
+                Start A Discussion
+              </h2>
+              <form onSubmit={handleCreateThread} className="mt-4 space-y-4">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-topic">
+                    Topic
+                  </label>
+                  <select
+                    id="forum-topic"
+                    value={topic}
+                    onChange={(event) => setTopic(event.target.value as ForumTopic)}
+                    className="w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white focus:border-[#ff6b3d] focus:outline-none"
+                  >
+                    {topicOptions
+                      .filter((option): option is { value: ForumTopic; label: string } => option.value !== "all")
+                      .map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-title">
+                    Title
+                  </label>
+                  <input
+                    id="forum-title"
+                    value={title}
+                    onChange={(event) => setTitle(event.target.value)}
+                    placeholder={placeholderTitle}
+                    className="w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
+                    maxLength={120}
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-body">
+                    Details
+                  </label>
+                  <textarea
+                    id="forum-body"
+                    value={body}
+                    onChange={(event) => setBody(event.target.value)}
+                    placeholder={placeholderBody}
+                    className="min-h-32 w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
+                    maxLength={800}
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff6b3d] px-5 py-3 font-semibold text-white transition-colors hover:bg-[#ff7a52] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {topicOptions
-                    .filter((option): option is { value: ForumTopic; label: string } => option.value !== "all")
-                    .map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-title">
-                  Title
-                </label>
-                <input
-                  id="forum-title"
-                  value={title}
-                  onChange={(event) => setTitle(event.target.value)}
-                  placeholder={placeholderTitle}
-                  className="w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
-                  maxLength={120}
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="mb-2 block text-sm font-medium text-gray-300" htmlFor="forum-body">
-                  Details
-                </label>
-                <textarea
-                  id="forum-body"
-                  value={body}
-                  onChange={(event) => setBody(event.target.value)}
-                  placeholder={placeholderBody}
-                  className="min-h-32 w-full rounded-xl border border-gray-700 bg-gray-900 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
-                  maxLength={800}
-                  required
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={submitting}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff6b3d] px-5 py-3 font-semibold text-white transition-colors hover:bg-[#ff7a52] disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Send className="h-4 w-4" />
-                {submitting ? "Posting..." : "Post Concern"}
-              </button>
-            </form>
-          </section>
+                  <Send className="h-4 w-4" />
+                  {submitting ? "Posting..." : "Post Concern"}
+                </button>
+              </form>
+            </section>
+          )}
         </aside>
 
         <section className="space-y-5">
@@ -384,27 +431,29 @@ export function CommunityForum() {
                   )}
                 </div>
 
-                <div className="mt-4 flex flex-col gap-3 rounded-xl border border-gray-700 bg-gray-900/50 p-4">
-                  <textarea
-                    value={replyDrafts[thread.id] ?? ""}
-                    onChange={(event) =>
-                      setReplyDrafts((current) => ({ ...current, [thread.id]: event.target.value }))
-                    }
-                    placeholder="Add a helpful reply, warning, or local update."
-                    className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
-                    maxLength={500}
-                  />
-                  <div className="flex justify-end">
-                    <button
-                      onClick={() => void handleReplySubmit(thread.id)}
-                      disabled={replyingThreadId === thread.id}
-                      className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-semibold text-white transition-colors hover:border-[#ff6b3d] hover:text-[#ff9a7a] disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <Send className="h-4 w-4" />
-                      {replyingThreadId === thread.id ? "Sending..." : "Reply"}
-                    </button>
+                {isAdminMonitor ? null : (
+                  <div className="mt-4 flex flex-col gap-3 rounded-xl border border-gray-700 bg-gray-900/50 p-4">
+                    <textarea
+                      value={replyDrafts[thread.id] ?? ""}
+                      onChange={(event) =>
+                        setReplyDrafts((current) => ({ ...current, [thread.id]: event.target.value }))
+                      }
+                      placeholder="Add a helpful reply, warning, or local update."
+                      className="min-h-24 w-full rounded-xl border border-gray-700 bg-gray-950 px-4 py-3 text-sm text-white placeholder:text-gray-500 focus:border-[#ff6b3d] focus:outline-none"
+                      maxLength={500}
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => void handleReplySubmit(thread.id)}
+                        disabled={replyingThreadId === thread.id}
+                        className="inline-flex items-center gap-2 rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm font-semibold text-white transition-colors hover:border-[#ff6b3d] hover:text-[#ff9a7a] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <Send className="h-4 w-4" />
+                        {replyingThreadId === thread.id ? "Sending..." : "Reply"}
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
               </article>
             ))
           )}

@@ -179,7 +179,7 @@ export function LiveTracking() {
     console.log("SUS Survey Responses:", responses);
     setSurveySubmitted(true);
     setShowSUSSurvey(false);
-    alert("Thank you for your feedback! Your responses help us improve KalsadaKonek.");
+    alert("Thank you for your feedback! Your responses help us improve Soteria.");
   };
 
   const handleFeedbackSubmit = async ({
@@ -240,7 +240,7 @@ export function LiveTracking() {
   }
 
   const agent = {
-    name: dispatchData.agent?.businessName || "KalsadaKonek Responder",
+    name: dispatchData.agent?.businessName || "Soteria Responder",
     phone: dispatchData.agent?.phone || "+63 917 123 4567",
     vehicleNumber: "ABC 1234",
     eta:
@@ -311,7 +311,7 @@ export function LiveTracking() {
             </div>
             <h1 className="mb-2 text-2xl font-bold text-white">Service Completed!</h1>
             <p className="mb-6 text-sm text-gray-400">
-              Thank you for using KalsadaKonek. We hope your vehicle is back on the road safely.
+              Thank you for using Soteria. We hope your vehicle is back on the road safely.
             </p>
 
             <div className="mb-5 rounded-xl border border-gray-700 bg-gray-800 p-4 shadow-sm">
@@ -330,15 +330,29 @@ export function LiveTracking() {
                   <span className="font-medium text-white">{formatTime(elapsedTime)}</span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-gray-400">Service Fee:</span>
-                  <span className="font-medium text-green-400">PHP 450</span>
+                  <span className="text-gray-400">Motorist Paid:</span>
+                  <span className="font-medium text-green-400">
+                    PHP {dispatchData.payment?.totalAmount ?? 0}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Soteria Commission:</span>
+                  <span className="font-medium text-white">
+                    PHP {dispatchData.payment?.commissionAmount ?? 0}
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-gray-400">Responder Payout:</span>
+                  <span className="font-medium text-green-400">
+                    PHP {dispatchData.payment?.serviceAmount ?? 0}
+                  </span>
                 </div>
               </div>
             </div>
 
-            <div className="mb-4 rounded-lg border border-yellow-500/50 bg-yellow-900/30 p-3">
-              <p className="text-xs text-yellow-100">
-                Please settle payment directly with the responder via cash or mobile wallet.
+            <div className="mb-4 rounded-lg border border-green-500/50 bg-green-900/30 p-3">
+              <p className="text-xs text-green-100">
+                Payment was processed through Soteria. The system deducted commission and transferred the responder payout automatically.
               </p>
             </div>
 
@@ -370,7 +384,7 @@ export function LiveTracking() {
             {!surveySubmitted ? (
               <div className="mb-4 rounded-lg border border-blue-500/50 bg-blue-900/20 p-3">
                 <p className="mb-2.5 text-xs text-gray-200">
-                  You can also complete the quick system survey to help improve KalsadaKonek.
+                  You can also complete the quick system survey to help improve Soteria.
                 </p>
                 <button
                   onClick={() => setShowSUSSurvey(true)}

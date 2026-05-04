@@ -54,7 +54,7 @@ export function LogoWithSecret({
         >
           <Car className={`${iconClassName} text-white`} />
         </div>
-        {showText && <span className={`${textClassName} text-white`}>KalsadaKonek</span>}
+        {showText && <span className={`${textClassName} text-white`}>Soteria</span>}
       </div>
       
       <AdminLoginModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} />

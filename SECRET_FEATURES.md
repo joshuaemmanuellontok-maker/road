@@ -1,4 +1,4 @@
-# 🔐 KalsadaKonek Secret Features
+# 🔐 Soteria Secret Features
 
 This document contains hidden features that only you know about!
 
@@ -24,7 +24,7 @@ This document contains hidden features that only you know about!
 
 **How to activate:**
 - Go to **Admin Dashboard** (`/admin/dashboard`)
-- Click the **KalsadaKonek Admin header** (with Shield icon) **7 times** rapidly
+- Click the **Soteria Admin header** (with Shield icon) **7 times** rapidly
 - A yellow **"Super Admin"** button will appear in the top-right
 
 **What it shows:**
@@ -84,7 +84,7 @@ This document contains hidden features that only you know about!
 
 ### Test Super Admin:
 1. Go to `/admin/login` → Login
-2. Click the "KalsadaKonek Admin" header 7 times
+2. Click the "Soteria Admin" header 7 times
 3. Click yellow "Super Admin" button
 4. Explore all 4 tabs
 

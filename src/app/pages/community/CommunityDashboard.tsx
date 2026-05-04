@@ -219,7 +219,7 @@ export function CommunityDashboard() {
               <div className="mt-4 space-y-3 text-sm leading-6 text-gray-300">
                 <p>Coins stay small by design so rewards feel earned over time, not instant.</p>
                 <p>When you redeem a cash ticket, your current coin balance resets to zero.</p>
-                <p>Admin will manually send the payout to the GCash account you submit in the ticket.</p>
+                <p>Soteria will process the payout to the GCash account you submit in the ticket.</p>
               </div>
             </div>
           </section>
@@ -228,7 +228,7 @@ export function CommunityDashboard() {
             <div className="rounded-3xl border border-gray-800 bg-gray-900 p-6">
               <h2 className="text-xl font-bold">Cash Ticket Exchange Shop</h2>
               <p className="mt-2 text-sm text-gray-300">
-                Choose the ticket you can already afford. Submitting a ticket sends it to admin for manual GCash payout.
+                Choose the ticket you can already afford. Submitting a ticket queues it for Soteria payout processing.
               </p>
 
               <div className="mt-6 space-y-3">

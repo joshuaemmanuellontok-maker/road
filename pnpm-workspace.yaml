@@ -1,5 +1,4 @@
 packages:
   - '.'
   - 'backend'
-  - 'mobile'
   - 'packages/*'

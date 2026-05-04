@@ -65,7 +65,7 @@ async function main() {
 
   console.log(
     wipeAll
-      ? "Cleaning all KalsadaKonek Firestore collections..."
+      ? "Cleaning all Soteria Firestore collections..."
       : "Cleaning operational Firestore collections...",
   );
 

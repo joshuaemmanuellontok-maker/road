@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * CREATE FIRESTORE COLLECTIONS FOR KalsadaKonek REAL-TIME RESCUE
+ * CREATE FIRESTORE COLLECTIONS FOR Soteria REAL-TIME RESCUE
  *
  * Run this script to create agents and requests collections:
  * node scripts/create-collections.js
@@ -49,7 +49,7 @@ try {
 const db = admin.firestore();
 
 async function createCollections() {
-  console.log("\n🔥 Creating Firestore Collections for KalsadaKonek\n");
+  console.log("\n🔥 Creating Firestore Collections for Soteria\n");
   console.log("=".repeat(60));
 
   try {

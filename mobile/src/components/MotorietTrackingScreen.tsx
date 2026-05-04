@@ -1,5 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
+  Alert,
+  Linking,
   Pressable,
   ScrollView,
   View,
@@ -8,17 +10,19 @@ import {
   ActivityIndicator,
   TextInput,
 } from "react-native";
-import MapView, { Marker, Polyline } from "react-native-maps";
 import {
   calculateDistance,
+  createServiceOnlinePayment,
   fetchDispatchDetails,
   fetchDispatchFeedback,
   fetchDispatchFeedbackThread,
   getRoute,
+  payServiceWithCredits,
   submitDispatchFeedback,
   type DispatchDetails,
   type DispatchFeedback,
 } from "../lib/roadresqApi";
+import { LeafletMap, type LeafletMarker } from "./LeafletMap";
 
 interface Props {
   dispatchId: string;
@@ -43,6 +47,7 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
   const [mapMinimized, setMapMinimized] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [paymentSubmitting, setPaymentSubmitting] = useState<"soteria_credits" | "online_payment" | null>(null);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [existingFeedback, setExistingFeedback] = useState<DispatchFeedback | null>(null);
   const [feedbackThread, setFeedbackThread] = useState<DispatchFeedback[]>([]);
@@ -53,7 +58,6 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
     serviceQuality: 0,
   });
   const [comment, setComment] = useState("");
-  const mapRef = useRef<MapView>(null);
   const trackedMotoristLocation = dispatch?.motorist
     ? {
         latitude: dispatch.motorist.latitude,
@@ -138,15 +142,6 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
     };
 
     void loadRoute();
-  }, [agentLocation, trackedMotoristLocation]);
-
-  useEffect(() => {
-    if (!mapRef.current || !agentLocation) return;
-
-    mapRef.current.fitToCoordinates([trackedMotoristLocation, agentLocation], {
-      edgePadding: { top: 80, right: 60, bottom: 220, left: 60 },
-      animated: true,
-    });
   }, [agentLocation, trackedMotoristLocation]);
 
   useEffect(() => {
@@ -265,39 +260,67 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
   const agentReview = feedbackThread.find((item) => item.reviewerRole === "agent") ?? null;
   const canSubmitReview = !existingFeedback;
   const payment = dispatch.payment;
+  const paymentDue = dispatch.dispatchStatus === "payment_pending" ? payment : null;
+
+  const refreshDispatch = async () => {
+    const details = await fetchDispatchDetails(dispatchId);
+    setDispatch(details);
+    return details;
+  };
+
+  const handlePayWithCredits = async () => {
+    try {
+      setPaymentSubmitting("soteria_credits");
+      await payServiceWithCredits(dispatchId);
+      await refreshDispatch();
+      Alert.alert("Payment complete", "Your Soteria Credits payment was processed.");
+    } catch (err) {
+      Alert.alert("Payment failed", err instanceof Error ? err.message : "Could not process your Soteria Credits payment.");
+    } finally {
+      setPaymentSubmitting(null);
+    }
+  };
+
+  const handlePayOnline = async () => {
+    try {
+      setPaymentSubmitting("online_payment");
+      const result = await createServiceOnlinePayment(dispatchId, payment?.totalAmount ?? 0);
+      await refreshDispatch();
+      if (result.paymentUrl) {
+        await Linking.openURL(result.paymentUrl);
+      }
+    } catch (err) {
+      Alert.alert("Online payment failed", err instanceof Error ? err.message : "Could not open the PayMongo payment page.");
+    } finally {
+      setPaymentSubmitting(null);
+    }
+  };
+  const mapMarkers: LeafletMarker[] = [
+    {
+      id: "motorist",
+      latitude: trackedMotoristLocation.latitude,
+      longitude: trackedMotoristLocation.longitude,
+      title: "Your Location",
+      description: dispatch.motorist?.fullName || motoristName,
+      color: "#fb923c",
+    },
+    ...(agentLocation
+      ? [{
+          id: "responder",
+          latitude: agentLocation.latitude,
+          longitude: agentLocation.longitude,
+          title: "Rescue Responder",
+          description: dispatch.agent?.fullName || dispatch.agent?.businessName || "Responder",
+          color: "#22c55e",
+        }]
+      : []),
+  ];
 
   if (dispatch.dispatchStatus === "completed") {
     return (
       <View style={styles.container}>
         <View style={[styles.completedMapWrap, mapMinimized && styles.completedMapWrapMinimized]}>
-          <MapView
-            ref={mapRef}
-            style={styles.map}
-            initialRegion={{
-              latitude: trackedMotoristLocation.latitude,
-              longitude: trackedMotoristLocation.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-          >
-            <Marker
-              coordinate={trackedMotoristLocation}
-              title="Your Location"
-              pinColor="#fb923c"
-              description={dispatch.motorist?.fullName || motoristName}
-            />
-
-            {agentLocation ? (
-              <Marker
-                coordinate={agentLocation}
-                title="Rescue Responder"
-                pinColor="#22c55e"
-                description={dispatch.agent?.fullName || dispatch.agent?.businessName || "Responder"}
-              />
-            ) : null}
-
-            {route.length > 1 ? <Polyline coordinates={route} strokeWidth={3} strokeColor="#3b82f6" /> : null}
-          </MapView>
+          <LeafletMap center={trackedMotoristLocation} markers={mapMarkers} route={route} zoom={15} />
 
           <Pressable
             style={styles.minimizeButton}
@@ -324,21 +347,29 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
 
           {payment ? (
             <View style={styles.reviewCard}>
-              <Text style={styles.reviewTitle}>KalsadaKonek Payment</Text>
+              <Text style={styles.reviewTitle}>Soteria Payment</Text>
               <Text style={styles.reviewHint}>
-                Scan this sample QR for now. Replace it later with your real payment QR when you are ready.
+                Payment was processed through Soteria. Commission and responder payout were handled automatically.
               </Text>
               <View style={styles.paymentLayout}>
-                <SampleQr />
                 <View style={styles.paymentSummary}>
                   <Text style={styles.summaryHeading}>Payment breakdown</Text>
                   <Text style={styles.summaryLine}>Total payment: {formatPeso(payment.totalAmount)}</Text>
-                  <Text style={styles.summaryLine}>Responder service fee: {formatPeso(payment.serviceAmount)}</Text>
-                  <Text style={styles.summaryLine}>KalsadaKonek commission: {formatPeso(payment.commissionAmount)}</Text>
+                  <Text style={styles.summaryLine}>Soteria commission: {formatPeso(payment.commissionAmount)}</Text>
+                  <Text style={styles.summaryLine}>Responder net payout: {formatPeso(payment.serviceAmount)}</Text>
                   <Text style={styles.summaryLine}>
                     Commission rate: {Math.round(payment.commissionRate * 100)}%
                     {payment.subscriptionStatus === "active" ? " for subscribed motorists" : " for non-subscribed motorists"}
                   </Text>
+                  <Text style={styles.summaryLine}>
+                    Method: {payment.paymentMethod === "online_payment" ? "Direct online payment" : "Soteria Credits"}
+                  </Text>
+                  <Text style={styles.summaryLine}>
+                    Transfer status: {payment.payoutStatus === "auto_transferred" ? "Auto transferred" : payment.payoutStatus ?? "Processing"}
+                  </Text>
+                  {typeof payment.creditBalanceAfter === "number" ? (
+                    <Text style={styles.summaryLine}>Credits remaining: {formatPeso(payment.creditBalanceAfter)}</Text>
+                  ) : null}
                   <Text style={styles.summaryComment}>
                     {payment.subscriptionStatus === "active"
                       ? "This completed service used the lower 5% subscriber commission."
@@ -442,34 +473,9 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={styles.map}
-        initialRegion={{
-          latitude: trackedMotoristLocation.latitude,
-          longitude: trackedMotoristLocation.longitude,
-          latitudeDelta: 0.01,
-          longitudeDelta: 0.01,
-        }}
-      >
-        <Marker
-          coordinate={trackedMotoristLocation}
-          title="Your Location"
-          pinColor="#fb923c"
-          description={dispatch?.motorist?.fullName || motoristName}
-        />
-
-        {agentLocation ? (
-          <Marker
-            coordinate={agentLocation}
-            title="Rescue Responder"
-            pinColor="#22c55e"
-            description={dispatch.agent?.fullName || dispatch.agent?.businessName || "Responder"}
-          />
-        ) : null}
-
-        {route.length > 1 ? <Polyline coordinates={route} strokeWidth={3} strokeColor="#3b82f6" /> : null}
-      </MapView>
+      <View style={styles.map}>
+        <LeafletMap center={trackedMotoristLocation} markers={mapMarkers} route={route} zoom={15} />
+      </View>
 
       <View style={[styles.statusBar, getStatusColor(dispatch.dispatchStatus)]}>
         <Text style={styles.statusTitle}>{getStatusText(dispatch.dispatchStatus)}</Text>
@@ -477,10 +483,43 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
           {dispatch.dispatchStatus === "pending" && "Waiting for responder to accept..."}
           {dispatch.dispatchStatus === "accepted" && `${distance.toFixed(1)} km away, ETA ${eta}`}
           {dispatch.dispatchStatus === "arrived" && "Your responder has arrived."}
+          {dispatch.dispatchStatus === "payment_pending" && "Service is done. Choose how you want to pay."}
           {dispatch.dispatchStatus === "completed" && "Service completed"}
           {dispatch.dispatchStatus === "declined" && "Request declined. Please try another responder."}
         </Text>
       </View>
+
+      {paymentDue ? (
+        <View style={styles.infoCard}>
+          <Text style={styles.reviewTitle}>Service Payment</Text>
+          <Text style={styles.reviewHint}>The responder marked the service done. Please choose your payment method.</Text>
+          <View style={styles.paymentSummary}>
+            <Text style={styles.summaryLine}>Total due: {formatPeso(paymentDue.totalAmount)}</Text>
+            <Text style={styles.summaryLine}>Soteria commission: {formatPeso(paymentDue.commissionAmount)}</Text>
+            <Text style={styles.summaryLine}>Responder net payout: {formatPeso(paymentDue.serviceAmount)}</Text>
+          </View>
+          <View style={styles.paymentActions}>
+            <Pressable
+              style={[styles.payButton, paymentSubmitting && styles.payButtonDisabled]}
+              disabled={Boolean(paymentSubmitting)}
+              onPress={handlePayWithCredits}
+            >
+              <Text style={styles.payButtonText}>
+                {paymentSubmitting === "soteria_credits" ? "Processing..." : "Use Credits"}
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.payButton, styles.payButtonOnline, paymentSubmitting && styles.payButtonDisabled]}
+              disabled={Boolean(paymentSubmitting)}
+              onPress={handlePayOnline}
+            >
+              <Text style={styles.payButtonText}>
+                {paymentSubmitting === "online_payment" ? "Opening..." : "Pay Online"}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       {agentLocation && (dispatch.dispatchStatus === "accepted" || dispatch.dispatchStatus === "arrived") ? (
         <View style={styles.infoCard}>
@@ -509,45 +548,6 @@ function formatPeso(value: number) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   })}`;
-}
-
-function SampleQr() {
-  const cells = [
-    "111111100100111111",
-    "100000101110100001",
-    "101110100010101111",
-    "101110101110101111",
-    "101110100010101111",
-    "100000101110100001",
-    "111111101010111111",
-    "000000001001000000",
-    "111011111010111001",
-    "001100010101001110",
-    "110011101110110010",
-    "010101000011100101",
-    "111011111010101111",
-    "000000001110000000",
-    "111111101001111111",
-    "100000100111100001",
-    "101110101001101111",
-    "100000101110100001",
-  ];
-
-  return (
-    <View style={styles.qrWrap}>
-      {cells.map((row, rowIndex) => (
-        <View key={`qr-row-${rowIndex}`} style={styles.qrRow}>
-          {row.split("").map((cell, cellIndex) => (
-            <View
-              key={`qr-cell-${rowIndex}-${cellIndex}`}
-              style={[styles.qrCell, cell === "1" ? styles.qrCellDark : styles.qrCellLight]}
-            />
-          ))}
-        </View>
-      ))}
-      <Text style={styles.qrCaption}>Sample QR</Text>
-    </View>
-  );
 }
 
 function RatingRow({
@@ -592,6 +592,8 @@ function getStatusText(status: string | undefined): string {
       return "Responder Accepted";
     case "arrived":
       return "Responder Arrived";
+    case "payment_pending":
+      return "Payment Required";
     case "completed":
       return "Service Completed";
     case "declined":
@@ -609,6 +611,8 @@ function getStatusColor(status: string | undefined) {
       return { backgroundColor: "#dcfce7" };
     case "arrived":
       return { backgroundColor: "#dbeafe" };
+    case "payment_pending":
+      return { backgroundColor: "#ffedd5" };
     case "completed":
       return { backgroundColor: "#dcfce7" };
     case "declined":
@@ -766,6 +770,29 @@ const styles = StyleSheet.create({
   },
   paymentSummary: {
     width: "100%",
+  },
+  paymentActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 14,
+  },
+  payButton: {
+    flex: 1,
+    borderRadius: 12,
+    backgroundColor: "#16a34a",
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+  payButtonOnline: {
+    backgroundColor: "#2563eb",
+  },
+  payButtonDisabled: {
+    opacity: 0.65,
+  },
+  payButtonText: {
+    color: "white",
+    fontSize: 13,
+    fontWeight: "800",
   },
   qrWrap: {
     borderRadius: 18,

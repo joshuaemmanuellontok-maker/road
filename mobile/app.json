@@ -1,38 +1,31 @@
 {
   "expo": {
-    "name": "KalsadaKonek Mobile",
-    "slug": "roadresq-mobile",
+    "name": "Soteria Mobile",
+    "slug": "soteria",
     "version": "0.0.1",
     "orientation": "portrait",
     "plugins": [
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "KalsadaKonek uses your location to find nearby shops and track rescue responders."
+          "locationWhenInUsePermission": "Soteria uses your location to find nearby shops and track rescue responders."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "KalsadaKonek lets you attach vehicle photos to help responders assess your issue.",
-          "cameraPermission": "KalsadaKonek lets you take vehicle photos to help responders assess your issue."
+          "photosPermission": "Soteria lets you attach vehicle photos to help responders assess your issue.",
+          "cameraPermission": "Soteria lets you take vehicle photos to help responders assess your issue."
         }
       ]
     ],
     "ios": {
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "KalsadaKonek uses your location to find nearby shops and track rescue responders."
+        "NSLocationWhenInUseUsageDescription": "Soteria uses your location to find nearby shops and track rescue responders."
       }
     },
     "android": {
       "permissions": [
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.RECORD_AUDIO"
@@ -41,6 +34,13 @@
     },
     "assetBundlePatterns": [
       "**/*"
-    ]
+    ],
+    "extra": {
+      "apiBaseUrl": "http://192.168.1.4:4000/api",
+      "eas": {
+        "projectId": "f743edb2-66f0-4e20-a011-b8428da79400"
+      }
+    },
+    "owner": "joshuaemms-organization"
   }
 }

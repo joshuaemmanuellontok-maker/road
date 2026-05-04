@@ -1,4 +1,4 @@
-# KalsadaKonek Real-Time Rescue - Integration Guide
+# Soteria Real-Time Rescue - Integration Guide
 
 ## 📋 Overview
 

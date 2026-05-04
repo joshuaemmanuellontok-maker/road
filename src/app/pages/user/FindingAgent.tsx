@@ -252,7 +252,7 @@ export function FindingAgent() {
               </p>
               <p className="text-xl font-bold text-green-400 mb-1">₱350 - ₱500</p>
               <p className="text-xs text-gray-400">
-                Standardized pricing to prevent overcharging. Final payment in cash or mobile wallet.
+                Standardized pricing to prevent overcharging. Final payment can use Soteria Credits or direct online payment.
               </p>
             </div>
 

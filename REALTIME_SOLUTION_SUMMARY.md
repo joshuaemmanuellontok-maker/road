@@ -1,8 +1,8 @@
-# 🚀 KalsadaKonek Real-Time Rescue System - Complete Solution
+# 🚀 Soteria Real-Time Rescue System - Complete Solution
 
 ## ✨ What You Now Have
 
-A **production-ready, real-time matching and GPS tracking system** for KalsadaKonek that works like Grab.
+A **production-ready, real-time matching and GPS tracking system** for Soteria that works like Grab.
 
 ### Core Features Implemented ✅
 
