@@ -1316,6 +1316,76 @@ function getPayoutProviderMode() {
   return provider || "simulated";
 }
 
+function getPayMongoWalletTransferConfig() {
+  return {
+    walletId: process.env.PAYMONGO_WALLET_ID ?? "",
+    transferProvider: (process.env.PAYMONGO_WALLET_TRANSFER_PROVIDER ?? "instapay").toLowerCase(),
+    destinationBic: process.env.PAYMONGO_GCASH_BIC ?? "GXCHPHM2XXX",
+    callbackUrl: process.env.PAYMONGO_WALLET_TRANSFER_CALLBACK_URL ?? "",
+  };
+}
+
+async function createPayMongoWalletTransfer(payout) {
+  const { walletId, transferProvider, destinationBic, callbackUrl } = getPayMongoWalletTransferConfig();
+  const { secretKey } = getPayMongoConfig();
+
+  if (!secretKey || !walletId) {
+    throw new Error("PayMongo wallet payout is not configured. Set PAYMONGO_WALLET_ID and PAYMONGO_SECRET_KEY.");
+  }
+
+  const amountInCentavos = Math.round(Number(payout.net_amount ?? 0) * 100);
+  if (!Number.isFinite(amountInCentavos) || amountInCentavos <= 0) {
+    throw new Error("A valid responder payout amount is required.");
+  }
+
+  const transfer = {
+    source_account: {
+      type: "wallet",
+      wallet_id: walletId,
+    },
+    destination_account: {
+      number: String(payout.destination_account ?? "").trim(),
+      name: String(payout.destination_name ?? "").trim(),
+      bic: destinationBic,
+      type: "bank",
+    },
+    amount: amountInCentavos,
+    currency: "PHP",
+    provider: transferProvider,
+    callback_url: callbackUrl || undefined,
+    description: `Soteria responder payout ${payout.dispatch_id}`,
+  };
+
+  const response = await fetch(`https://api.paymongo.com/v1/wallets/${walletId}/transactions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${encodePayMongoAuth(secretKey)}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      data: {
+        attributes: transfer,
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail =
+      payload?.errors?.[0]?.detail ??
+      payload?.errors?.[0]?.code ??
+      payload?.message ??
+      "PayMongo wallet transfer failed.";
+    const error = new Error(detail);
+    error.statusCode = response.status;
+    error.providerPayload = payload;
+    throw error;
+  }
+
+  return payload?.data ?? payload;
+}
+
 async function createResponderPayoutForDispatch(dispatch, dispatchDetails, payment) {
   const existingPayouts = await getDocuments("responder_payouts", { dispatch_id: dispatch.id });
   const existing = existingPayouts[0] ?? null;
@@ -1382,7 +1452,7 @@ async function processResponderPayout(payout) {
     return getDocument("responder_payouts", payoutId);
   }
 
-  if (provider === "simulated" || process.env.NODE_ENV !== "production") {
+  if (provider === "simulated" || (process.env.NODE_ENV !== "production" && provider !== "paymongo")) {
     const providerPayoutId = `SIM-GCASH-${payoutId}`;
     await updateDocument("responder_payouts", payoutId, {
       status: "paid",
@@ -1392,6 +1462,46 @@ async function processResponderPayout(payout) {
       paid_at: serverTimestamp(),
       failure_reason: "",
     });
+    return getDocument("responder_payouts", payoutId);
+  }
+
+  if (provider === "paymongo") {
+    try {
+      await updateDocument("responder_payouts", payoutId, {
+        status: "processing",
+        provider,
+        processed_at: serverTimestamp(),
+        failure_reason: "",
+      });
+
+      const transfer = await createPayMongoWalletTransfer(payout);
+      const providerPayoutId = transfer?.id ?? transfer?.data?.id ?? "";
+      const providerStatus =
+        transfer?.attributes?.status ??
+        transfer?.data?.attributes?.status ??
+        "processing";
+      const paid = ["succeeded", "success", "completed", "paid"].includes(String(providerStatus).toLowerCase());
+
+      await updateDocument("responder_payouts", payoutId, {
+        status: paid ? "paid" : "processing",
+        provider,
+        provider_payout_id: providerPayoutId,
+        provider_status: providerStatus,
+        provider_payload: transfer,
+        processed_at: serverTimestamp(),
+        paid_at: paid ? serverTimestamp() : null,
+        failure_reason: "",
+      });
+    } catch (error) {
+      await updateDocument("responder_payouts", payoutId, {
+        status: "failed",
+        provider,
+        processed_at: serverTimestamp(),
+        failure_reason: error instanceof Error ? error.message : "PayMongo wallet transfer failed.",
+        provider_payload: error?.providerPayload ?? null,
+      });
+    }
+
     return getDocument("responder_payouts", payoutId);
   }
 
