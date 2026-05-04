@@ -931,6 +931,73 @@ async function createPayMongoLink({ amount, description, reference }) {
   };
 }
 
+async function fetchPayMongoLink(providerLinkId) {
+  const { secretKey } = getPayMongoConfig();
+  if (!secretKey || !providerLinkId) {
+    return null;
+  }
+
+  const response = await fetch(`https://api.paymongo.com/v1/links/${providerLinkId}`, {
+    headers: {
+      Authorization: `Basic ${encodePayMongoAuth(secretKey)}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = await response.json().catch(() => null);
+  return payload?.data ?? null;
+}
+
+async function syncPaidServicePaymentFromPayMongo(servicePayment) {
+  if (!servicePayment || servicePayment.status === "completed") {
+    return { synced: false, reason: "already_completed_or_missing" };
+  }
+
+  if (servicePayment.provider !== "paymongo" || !servicePayment.provider_link_id) {
+    return { synced: false, reason: "not_paymongo_link_payment" };
+  }
+
+  const link = await fetchPayMongoLink(servicePayment.provider_link_id);
+  if (!link) {
+    return { synced: false, reason: "provider_link_not_found" };
+  }
+
+  if (link?.attributes?.status !== "paid") {
+    await updateDocument("service_payments", servicePayment.id, {
+      provider_status: link?.attributes?.status ?? servicePayment.provider_status ?? "unpaid",
+    });
+    return { synced: false, reason: "provider_not_paid", providerStatus: link?.attributes?.status ?? null };
+  }
+
+  const result = await completePaidServiceFromPayMongo(link);
+  return { synced: Boolean(result.fulfilled), result };
+}
+
+async function syncPaidServicePaymentForDispatch(dispatch) {
+  if (!dispatch || dispatch.dispatch_status !== "payment_pending") {
+    return { synced: false, reason: "dispatch_not_payment_pending" };
+  }
+
+  const servicePaymentId = dispatch.service_payment_id ?? null;
+  const candidates = servicePaymentId
+    ? [await getDocument("service_payments", servicePaymentId)]
+    : await getDocuments("service_payments", { dispatch_id: dispatch.id });
+
+  const pendingPayment = candidates
+    .filter(Boolean)
+    .find((payment) => payment.status !== "completed" && payment.provider === "paymongo");
+
+  if (!pendingPayment) {
+    return { synced: false, reason: "service_payment_not_found" };
+  }
+
+  return syncPaidServicePaymentFromPayMongo(pendingPayment);
+}
+
 async function createPayMongoTopUpLink({ amount, reference }) {
   return createPayMongoLink({
     amount,
@@ -1500,7 +1567,7 @@ async function listCompletedDispatchHistoryForUser(userId, role) {
         ? dispatchDetails.agent
         : dispatchDetails.motorist;
     const completedAtMs = dispatch.completed_at?.toDate?.()?.getTime?.() ?? 0;
-    const submittedAtMs = viewerFeedback.submitted_at?.toDate?.()?.getTime?.() ?? 0;
+    const submittedAtMs = viewerFeedback?.submitted_at?.toDate?.()?.getTime?.() ?? 0;
     const payment = dispatchDetails.payment ?? await buildDispatchPaymentSummary(dispatch, dispatchDetails);
 
     history.push({
@@ -3120,6 +3187,26 @@ app.post("/api/community/register", async (request, response, next) => {
   }
 });
 
+app.post("/api/dispatches/:dispatchId/payment/sync", async (request, response, next) => {
+  try {
+    const { dispatchId } = request.params;
+    const dispatch = await getDocument(collections.dispatches, dispatchId);
+    if (!dispatch) {
+      response.status(404).json({ error: "Dispatch not found." });
+      return;
+    }
+
+    const syncResult = await syncPaidServicePaymentForDispatch(dispatch);
+    const updatedDispatch = await getDocument(collections.dispatches, dispatchId);
+    response.json({
+      syncResult,
+      dispatch: updatedDispatch ? serializeDispatchDetails(await buildDispatchDetails(updatedDispatch)) : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get("/api/dispatches/:dispatchId/feedback", async (request, response, next) => {
   try {
     const { dispatchId } = request.params;
@@ -4614,11 +4701,18 @@ app.get("/api/dispatches/:dispatchId", async (request, response, next) => {
     }
 
     const { dispatchId } = request.params;
-    const dispatch = await getDocument(collections.dispatches, dispatchId);
+    let dispatch = await getDocument(collections.dispatches, dispatchId);
 
     if (!dispatch) {
       response.status(404).json({ error: "Dispatch not found." });
       return;
+    }
+
+    if (dispatch.dispatch_status === "payment_pending" && dispatch.payment_method === "online_payment") {
+      const syncResult = await syncPaidServicePaymentForDispatch(dispatch);
+      if (syncResult.synced) {
+        dispatch = await getDocument(collections.dispatches, dispatchId);
+      }
     }
 
     response.json(await buildDispatchDetails(dispatch));
