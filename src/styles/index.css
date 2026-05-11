@@ -2,3 +2,88 @@
 @import './tailwind.css';
 @import './theme.css';
 @import 'leaflet/dist/leaflet.css';
+
+@keyframes soteria-splash-exit {
+  0% {
+    opacity: 1;
+    visibility: visible;
+  }
+  72% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes soteria-splash-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(22px) scale(0.96);
+  }
+  45%,
+  78% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+}
+
+@keyframes soteria-splash-spin {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+@keyframes soteria-splash-spin-reverse {
+  to {
+    transform: translate(-50%, -50%) rotate(-360deg);
+  }
+}
+
+@keyframes soteria-splash-load {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.soteria-splash {
+  animation: soteria-splash-exit 2.8s ease forwards;
+}
+
+.soteria-splash-content {
+  animation: soteria-splash-rise 2.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.soteria-splash-orbit {
+  border-style: dashed;
+  animation: soteria-splash-spin 18s linear infinite;
+}
+
+.soteria-splash-orbit-reverse {
+  border-style: dashed;
+  animation: soteria-splash-spin-reverse 14s linear infinite;
+}
+
+.soteria-splash-progress {
+  transform-origin: left center;
+  animation: soteria-splash-load 2.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .soteria-splash,
+  .soteria-splash-content,
+  .soteria-splash-orbit,
+  .soteria-splash-orbit-reverse,
+  .soteria-splash-progress {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
+  }
+}

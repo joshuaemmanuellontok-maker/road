@@ -246,6 +246,8 @@ export interface AdminEarningsSummary {
   };
   recentCommissions: Array<{
     id: string;
+    baseServiceAmount?: number;
+    payoutTransferFee?: number;
     totalAmount: number;
     serviceAmount: number;
     commissionAmount: number;
@@ -273,6 +275,15 @@ export interface CommunityRewardOption {
   cashValue: number;
 }
 
+export type CommunityRedemptionStatus =
+  | "pending"
+  | "processing"
+  | "awaiting_wallet_funding"
+  | "details_required"
+  | "failed"
+  | "paid"
+  | "rejected";
+
 export interface CommunityRedemption {
   id: string;
   userId: string;
@@ -285,9 +296,17 @@ export interface CommunityRedemption {
   coinsSpent: number;
   gcashName: string;
   gcashNumber: string;
-  status: "pending" | "paid" | "rejected";
+  status: CommunityRedemptionStatus;
   submittedAt: string | null;
   reviewedAt: string | null;
+  payoutTransferFee: number;
+  netPayoutAmount: number;
+  provider: string;
+  providerPayoutId: string | null;
+  providerStatus: string | null;
+  failureReason: string;
+  processedAt: string | null;
+  paidAt: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -810,11 +829,14 @@ export interface DispatchDetails {
   arrivedAt: string | null;
   completedAt: string | null;
   payment: {
+    baseServiceAmount?: number;
+    payoutTransferFee?: number;
     serviceAmount: number;
     totalAmount: number;
     commissionAmount: number;
     commissionRate: number;
     subscriptionStatus: "active" | "inactive";
+    subscriptionPlan?: "monthly" | "six_months" | "annual" | null;
     paymentStatus?: string;
     payoutStatus?: string;
     payoutTransferredAt?: string | null;
@@ -955,11 +977,19 @@ export async function fetchDispatchDetails(dispatchId: string): Promise<Dispatch
     completedAt: readNullableString(row.completed_at ?? row.completedAt),
     payment: isRecord(row.payment)
       ? {
+          baseServiceAmount: Number(row.payment.baseServiceAmount ?? row.payment.base_service_amount ?? row.payment.totalAmount ?? row.payment.total_amount ?? 0),
+          payoutTransferFee: Number(row.payment.payoutTransferFee ?? row.payment.payout_transfer_fee ?? 0),
           serviceAmount: Number(row.payment.serviceAmount ?? row.payment.service_amount ?? 0),
           totalAmount: Number(row.payment.totalAmount ?? row.payment.total_amount ?? 0),
           commissionAmount: Number(row.payment.commissionAmount ?? row.payment.commission_amount ?? 0),
           commissionRate: Number(row.payment.commissionRate ?? row.payment.commission_rate ?? 0),
           subscriptionStatus: row.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          subscriptionPlan:
+            row.payment.subscriptionPlan === "monthly" ||
+            row.payment.subscriptionPlan === "six_months" ||
+            row.payment.subscriptionPlan === "annual"
+              ? row.payment.subscriptionPlan
+              : null,
           paymentStatus: readString(row.payment.paymentStatus ?? row.payment.payment_status, "system_received"),
           payoutStatus: readString(row.payment.payoutStatus ?? row.payment.payout_status, "auto_transferred"),
           payoutTransferredAt: readNullableString(row.payment.payoutTransferredAt ?? row.payment.payout_transferred_at),
@@ -1043,11 +1073,19 @@ function mapDispatchHistoryEntry(payload: unknown): DispatchHistoryEntry {
     serviceLabel: readString(row.serviceLabel ?? row.service_label),
     payment: isRecord(row.payment)
       ? {
+          baseServiceAmount: Number(row.payment.baseServiceAmount ?? row.payment.base_service_amount ?? row.payment.totalAmount ?? row.payment.total_amount ?? 0),
+          payoutTransferFee: Number(row.payment.payoutTransferFee ?? row.payment.payout_transfer_fee ?? 0),
           serviceAmount: Number(row.payment.serviceAmount ?? row.payment.service_amount ?? 0),
           totalAmount: Number(row.payment.totalAmount ?? row.payment.total_amount ?? 0),
           commissionAmount: Number(row.payment.commissionAmount ?? row.payment.commission_amount ?? 0),
           commissionRate: Number(row.payment.commissionRate ?? row.payment.commission_rate ?? 0),
           subscriptionStatus: row.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          subscriptionPlan:
+            row.payment.subscriptionPlan === "monthly" ||
+            row.payment.subscriptionPlan === "six_months" ||
+            row.payment.subscriptionPlan === "annual"
+              ? row.payment.subscriptionPlan
+              : null,
           paymentStatus: readString(row.payment.paymentStatus ?? row.payment.payment_status, "system_received"),
           payoutStatus: readString(row.payment.payoutStatus ?? row.payment.payout_status, "auto_transferred"),
           payoutTransferredAt: readNullableString(row.payment.payoutTransferredAt ?? row.payment.payout_transferred_at),
@@ -1071,11 +1109,19 @@ function mapDispatchHistoryEntry(payload: unknown): DispatchHistoryEntry {
       completedAt: readNullableString(row.dispatch.completedAt ?? row.dispatch.completed_at),
       payment: isRecord(row.dispatch.payment)
         ? {
+            baseServiceAmount: Number(row.dispatch.payment.baseServiceAmount ?? row.dispatch.payment.base_service_amount ?? row.dispatch.payment.totalAmount ?? row.dispatch.payment.total_amount ?? 0),
+            payoutTransferFee: Number(row.dispatch.payment.payoutTransferFee ?? row.dispatch.payment.payout_transfer_fee ?? 0),
             serviceAmount: Number(row.dispatch.payment.serviceAmount ?? row.dispatch.payment.service_amount ?? 0),
             totalAmount: Number(row.dispatch.payment.totalAmount ?? row.dispatch.payment.total_amount ?? 0),
             commissionAmount: Number(row.dispatch.payment.commissionAmount ?? row.dispatch.payment.commission_amount ?? 0),
             commissionRate: Number(row.dispatch.payment.commissionRate ?? row.dispatch.payment.commission_rate ?? 0),
             subscriptionStatus: row.dispatch.payment.subscriptionStatus === "active" ? "active" : "inactive",
+            subscriptionPlan:
+              row.dispatch.payment.subscriptionPlan === "monthly" ||
+              row.dispatch.payment.subscriptionPlan === "six_months" ||
+              row.dispatch.payment.subscriptionPlan === "annual"
+                ? row.dispatch.payment.subscriptionPlan
+                : null,
             paymentStatus: readString(row.dispatch.payment.paymentStatus ?? row.dispatch.payment.payment_status, "system_received"),
             payoutStatus: readString(row.dispatch.payment.payoutStatus ?? row.dispatch.payment.payout_status, "auto_transferred"),
             payoutTransferredAt: readNullableString(row.dispatch.payment.payoutTransferredAt ?? row.dispatch.payment.payout_transferred_at),
@@ -1236,11 +1282,24 @@ function mapCommunityRedemption(payload: unknown): CommunityRedemption {
     gcashName: readString(row.gcashName ?? row.gcash_name),
     gcashNumber: readString(row.gcashNumber ?? row.gcash_number),
     status:
-      row.status === "paid" || row.status === "rejected"
+      row.status === "paid" ||
+      row.status === "rejected" ||
+      row.status === "processing" ||
+      row.status === "awaiting_wallet_funding" ||
+      row.status === "details_required" ||
+      row.status === "failed"
         ? row.status
         : "pending",
     submittedAt: readNullableString(row.submittedAt ?? row.submitted_at),
     reviewedAt: readNullableString(row.reviewedAt ?? row.reviewed_at),
+    payoutTransferFee: Number(row.payoutTransferFee ?? row.payout_transfer_fee ?? 0),
+    netPayoutAmount: Number(row.netPayoutAmount ?? row.net_payout_amount ?? row.cashValue ?? row.cash_value ?? 0),
+    provider: readString(row.provider),
+    providerPayoutId: readNullableString(row.providerPayoutId ?? row.provider_payout_id),
+    providerStatus: readNullableString(row.providerStatus ?? row.provider_status),
+    failureReason: readString(row.failureReason ?? row.failure_reason),
+    processedAt: readNullableString(row.processedAt ?? row.processed_at),
+    paidAt: readNullableString(row.paidAt ?? row.paid_at),
   };
 }
 
@@ -1350,6 +1409,27 @@ export async function createForumReply(
   });
 
   return mapForumReply(response);
+}
+
+export async function deleteForumThread(threadId: string, adminUserId: string): Promise<{ id: string; deleted: boolean }> {
+  return apiRequest<{ id: string; deleted: boolean }>(`/forum/threads/${threadId}`, {
+    method: "DELETE",
+    body: JSON.stringify({ adminUserId }),
+  });
+}
+
+export async function deleteForumReply(
+  threadId: string,
+  replyId: string,
+  adminUserId: string,
+): Promise<{ id: string; threadId: string; deleted: boolean }> {
+  return apiRequest<{ id: string; threadId: string; deleted: boolean }>(
+    `/forum/threads/${threadId}/replies/${replyId}`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({ adminUserId }),
+    },
+  );
 }
 
 export async function fetchCommunityProfile(userId: string): Promise<CommunityProfile> {

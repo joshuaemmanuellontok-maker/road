@@ -7,7 +7,8 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "test": "node test_firebase.js",
-    "seed": "node seed_firebase.js"
+    "seed": "node seed_firebase.js",
+    "update:responder-gcash": "node update_responder_gcash.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

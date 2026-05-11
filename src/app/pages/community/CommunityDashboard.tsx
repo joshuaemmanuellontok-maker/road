@@ -15,6 +15,7 @@ import {
   fetchCommunityRewardOptions,
   type CommunityProfile,
   type CommunityRedemption,
+  type CommunityRedemptionStatus,
   type CommunityRewardOption,
 } from "../../api";
 import {
@@ -219,6 +220,7 @@ export function CommunityDashboard() {
               <div className="mt-4 space-y-3 text-sm leading-6 text-gray-300">
                 <p>Coins stay small by design so rewards feel earned over time, not instant.</p>
                 <p>When you redeem a cash ticket, your current coin balance resets to zero.</p>
+                <p>A PHP 10 transaction fee applies to every payout and will be deducted from the cash value of your redeemed coins.</p>
                 <p>Soteria will process the payout to the GCash account you submit in the ticket.</p>
               </div>
             </div>
@@ -228,13 +230,15 @@ export function CommunityDashboard() {
             <div className="rounded-3xl border border-gray-800 bg-gray-900 p-6">
               <h2 className="text-xl font-bold">Cash Ticket Exchange Shop</h2>
               <p className="mt-2 text-sm text-gray-300">
-                Choose the ticket you can already afford. Submitting a ticket queues it for Soteria payout processing.
+                Choose the ticket you can already afford. Submitting a ticket starts automated Soteria payout processing.
+                A PHP 10 transaction fee is deducted from each payout before PayMongo transfer.
               </p>
 
               <div className="mt-6 space-y-3">
                 {rewardOptions.map((option) => {
                   const selected = option.id === selectedRewardId;
                   const eligible = (profile?.communityCoins ?? 0) >= option.coinsRequired;
+                  const netPayout = Math.max(0, option.cashValue - 10);
                   return (
                     <button
                       key={option.id}
@@ -250,6 +254,9 @@ export function CommunityDashboard() {
                         <p className="font-semibold text-white">{option.title}</p>
                         <p className="mt-1 text-sm text-gray-400">
                           {option.coinsRequired} coins for PHP {option.cashValue}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-500">
+                          Net payout PHP {netPayout} after fee
                         </p>
                       </div>
                       <span
@@ -305,7 +312,7 @@ export function CommunityDashboard() {
                 }
                 className="mt-6 w-full rounded-xl bg-[#ff6b3d] px-5 py-4 font-semibold text-white transition-colors hover:bg-[#ff7a52] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {submitting ? "Submitting Ticket..." : "Redeem Ticket And Reset Coins"}
+                {submitting ? "Processing Payout..." : "Redeem And Start PayMongo Payout"}
               </button>
             </div>
 
@@ -322,18 +329,26 @@ export function CommunityDashboard() {
                         PHP {item.cashValue} • spent {item.coinsSpent} coins
                       </p>
                       <p className="mt-1 text-xs text-gray-500">
+                        Net payout PHP {item.netPayoutAmount} after PHP {item.payoutTransferFee} fee
+                      </p>
+                      {item.failureReason ? (
+                        <p className="mt-2 text-xs leading-5 text-red-300">{item.failureReason}</p>
+                      ) : null}
+                      <p className="mt-1 text-xs text-gray-500">
                         {item.submittedAt ?? "Unknown date"}
                       </p>
                       <span
                         className={`mt-3 inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
                           item.status === "paid"
                             ? "border border-green-500/30 bg-green-500/10 text-green-300"
-                            : item.status === "rejected"
+                            : item.status === "rejected" || item.status === "failed" || item.status === "details_required"
                               ? "border border-red-500/30 bg-red-500/10 text-red-300"
-                              : "border border-yellow-500/30 bg-yellow-500/10 text-yellow-300"
+                              : item.status === "processing"
+                                ? "border border-blue-500/30 bg-blue-500/10 text-blue-300"
+                                : "border border-yellow-500/30 bg-yellow-500/10 text-yellow-300"
                         }`}
                       >
-                        {item.status}
+                        {formatRedemptionStatus(item.status)}
                       </span>
                     </div>
                   ))
@@ -345,6 +360,20 @@ export function CommunityDashboard() {
       </main>
     </div>
   );
+}
+
+function formatRedemptionStatus(status: CommunityRedemptionStatus) {
+  const labels: Record<CommunityRedemptionStatus, string> = {
+    pending: "Pending",
+    processing: "Processing",
+    awaiting_wallet_funding: "Awaiting Wallet Funding",
+    details_required: "Details Required",
+    failed: "Failed",
+    paid: "Paid",
+    rejected: "Rejected",
+  };
+
+  return labels[status];
 }
 
 function StatCard(props: { label: string; value: string; icon: ReactNode }) {

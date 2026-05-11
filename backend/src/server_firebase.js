@@ -252,15 +252,51 @@ async function getAgentProfileByUserId(userId) {
   return null;
 }
 
-async function updateAgentProfileByUserId(userId, data) {
-  const profile = await getAgentProfileByUserId(userId);
+async function getAgentProfileDocumentsByUserId(userId) {
+  if (isFirestoreBackoffActive()) {
+    const error = new Error(getFirestoreBackoffMessage());
+    error.code = 8;
+    throw error;
+  }
 
-  if (!profile) {
+  const profiles = [];
+  const seen = new Set();
+
+  for (const collection of responderProfileCollections) {
+    const snapshots = await Promise.all([
+      db.collection(collection).where("user_id", "==", userId).get(),
+      db.collection(collection).doc(userId).get(),
+    ]).catch((error) => {
+      markFirestoreQuotaExceeded(error);
+      throw error;
+    });
+
+    for (const snapshot of snapshots) {
+      const docs = "docs" in snapshot ? snapshot.docs : snapshot.exists ? [snapshot] : [];
+      for (const doc of docs) {
+        const key = `${collection}/${doc.id}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          profiles.push({ id: doc.id, __collection: collection, ...doc.data() });
+        }
+      }
+    }
+  }
+
+  return profiles;
+}
+
+async function updateAgentProfileByUserId(userId, data) {
+  const profiles = await getAgentProfileDocumentsByUserId(userId);
+
+  if (profiles.length === 0) {
     throw new Error(`Responder profile not found for user ${userId}.`);
   }
 
-  await updateDocument(profile.__collection ?? collections.agentProfiles, profile.id, data);
-  return profile.id;
+  await Promise.all(
+    profiles.map((profile) => updateDocument(profile.__collection ?? collections.agentProfiles, profile.id, data)),
+  );
+  return profiles[0].id;
 }
 
 async function deleteDocument(collection, id) {
@@ -675,10 +711,13 @@ async function buildDispatchDetails(dispatch) {
       dispatch.commission_rate != null
         ? {
             totalAmount: Number(dispatch.total_amount ?? 0),
+            baseServiceAmount: Number(dispatch.base_service_amount ?? dispatch.total_amount ?? 0),
+            payoutTransferFee: Number(dispatch.payout_transfer_fee ?? 0),
             serviceAmount: Number(dispatch.service_amount ?? 0),
             commissionAmount: Number(dispatch.commission_amount ?? 0),
             commissionRate: Number(dispatch.commission_rate ?? 0),
             subscriptionStatus: dispatch.motorist_subscription_status === "active" ? "active" : "inactive",
+            subscriptionPlan: normalizeSubscriptionPlan(dispatch.motorist_subscription_plan),
             paymentStatus: dispatch.payment_status ?? "system_received",
             paymentMethod: dispatch.payment_method ?? "soteria_credits",
             payoutStatus: dispatch.payout_status ?? "auto_transferred",
@@ -686,7 +725,6 @@ async function buildDispatchDetails(dispatch) {
             transferReference: dispatch.transfer_reference ?? null,
             creditBalanceAfter:
               dispatch.credit_balance_after != null ? Number(dispatch.credit_balance_after) : null,
-            paymentMethod: dispatch.payment_method ?? "soteria_credits",
           }
         : null,
     motorist: emergencyReport && motoristUser
@@ -770,9 +808,12 @@ function serializeDispatchDetails(details) {
       ? {
           serviceAmount: Number(details.payment.serviceAmount ?? 0),
           totalAmount: Number(details.payment.totalAmount ?? 0),
+          baseServiceAmount: Number(details.payment.baseServiceAmount ?? details.payment.totalAmount ?? 0),
+          payoutTransferFee: Number(details.payment.payoutTransferFee ?? 0),
           commissionAmount: Number(details.payment.commissionAmount ?? 0),
           commissionRate: Number(details.payment.commissionRate ?? 0),
           subscriptionStatus: details.payment.subscriptionStatus ?? "inactive",
+          subscriptionPlan: details.payment.subscriptionPlan ?? null,
           paymentStatus: details.payment.paymentStatus ?? "system_received",
           paymentMethod: details.payment.paymentMethod ?? "soteria_credits",
           payoutStatus: details.payment.payoutStatus ?? "auto_transferred",
@@ -1188,6 +1229,8 @@ async function completePaidServiceFromPayMongo(link) {
   const payment = await buildDispatchPaymentSummary(
     {
       ...dispatch,
+      base_service_amount: servicePayment.base_service_amount,
+      payout_transfer_fee: servicePayment.payout_transfer_fee,
       total_amount: servicePayment.amount,
     },
     dispatchDetails,
@@ -1197,10 +1240,13 @@ async function completePaidServiceFromPayMongo(link) {
     dispatch_status: "completed",
     completed_at: serverTimestamp(),
     total_amount: payment.totalAmount,
+    base_service_amount: payment.baseServiceAmount,
+    payout_transfer_fee: payment.payoutTransferFee,
     service_amount: payment.serviceAmount,
     commission_amount: payment.commissionAmount,
     commission_rate: payment.commissionRate,
     motorist_subscription_status: payment.subscriptionStatus,
+    motorist_subscription_plan: payment.subscriptionPlan,
     payment_status: "provider_paid",
     payment_method: "online_payment",
     payout_status: "processing",
@@ -1219,6 +1265,8 @@ async function completePaidServiceFromPayMongo(link) {
     status: "completed",
     provider_status: link?.attributes?.status ?? "paid",
     paid_at: serverTimestamp(),
+    base_service_amount: payment.baseServiceAmount,
+    payout_transfer_fee: payment.payoutTransferFee,
     service_amount: payment.serviceAmount,
     commission_amount: payment.commissionAmount,
     commission_rate: payment.commissionRate,
@@ -1316,13 +1364,167 @@ function getPayoutProviderMode() {
   return provider || "simulated";
 }
 
+function getResponderPayoutTransferFee() {
+  return Math.max(0, normalizeCurrencyInput(process.env.RESPONDER_PAYOUT_TRANSFER_FEE ?? 0));
+}
+
+function getCommunityPayoutTransferFee() {
+  return Math.max(0, normalizeCurrencyInput(process.env.COMMUNITY_PAYOUT_TRANSFER_FEE ?? 10));
+}
+
+function getResponderMinimumPayoutAmount() {
+  return Math.max(0, normalizeCurrencyInput(process.env.RESPONDER_MIN_PAYOUT_AMOUNT ?? 10));
+}
+
 function getPayMongoWalletTransferConfig() {
   return {
     walletId: process.env.PAYMONGO_WALLET_ID ?? "",
     transferProvider: (process.env.PAYMONGO_WALLET_TRANSFER_PROVIDER ?? "instapay").toLowerCase(),
     destinationBic: process.env.PAYMONGO_GCASH_BIC ?? "GXCHPHM2XXX",
     callbackUrl: process.env.PAYMONGO_WALLET_TRANSFER_CALLBACK_URL ?? "",
+    maxAttempts: Math.max(1, Number(process.env.RESPONDER_PAYOUT_MAX_ATTEMPTS ?? 3)),
+    retryDelayMs: Math.max(60_000, Number(process.env.RESPONDER_PAYOUT_RETRY_DELAY_MS ?? 10 * 60_000)),
   };
+}
+
+function normalizePayoutAccountNumber(value) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.startsWith("63") && digits.length === 12) {
+    return `0${digits.slice(2)}`;
+  }
+  return digits;
+}
+
+function isValidGcashAccountNumber(value) {
+  return /^09\d{9}$/.test(normalizePayoutAccountNumber(value));
+}
+
+function getPayoutDestinationKey(name, account) {
+  const normalizedName = String(name ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedAccount = normalizePayoutAccountNumber(account);
+  return `${normalizedName}|${normalizedAccount}`;
+}
+
+function normalizePersonName(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
+function getNameParts(value) {
+  return normalizePersonName(value)
+    .toLowerCase()
+    .split(" ")
+    .filter(Boolean);
+}
+
+function resolvePayoutAccountName(savedPayoutName, userFullName = "") {
+  const savedName = normalizePersonName(savedPayoutName);
+  const fullName = normalizePersonName(userFullName);
+  if (!savedName || !fullName) {
+    return savedName || fullName;
+  }
+
+  const savedParts = getNameParts(savedName);
+  const fullParts = getNameParts(fullName);
+  const hasMatchingOuterName =
+    savedParts.length >= 2 &&
+    fullParts.length > savedParts.length &&
+    savedParts[0] === fullParts[0] &&
+    savedParts[savedParts.length - 1] === fullParts[fullParts.length - 1];
+
+  return hasMatchingOuterName ? fullName : savedName;
+}
+
+function getPayMongoTransferData(transfer) {
+  const data = transfer?.data ?? transfer ?? {};
+  const attributes = data.attributes ?? transfer?.attributes ?? {};
+  return {
+    id: data.id ?? transfer?.id ?? attributes.id ?? "",
+    attributes,
+  };
+}
+
+function isPayMongoPayoutPaidStatus(status) {
+  return ["succeeded", "success", "completed", "paid"].includes(String(status ?? "").toLowerCase());
+}
+
+function isPayMongoPayoutFailedStatus(status) {
+  return ["failed", "failure", "cancelled", "canceled"].includes(String(status ?? "").toLowerCase());
+}
+
+const payMongoDestinationAccountFailures = new Map([
+  ["AC01", "The responder GCash account number is invalid or does not exist. Please enter an active GCash number before retrying the payout."],
+  ["AC03", "The responder GCash account number is invalid. Please verify the GCash details before retrying the payout."],
+  ["AC04", "The responder GCash account is closed. Please enter an active GCash account before retrying the payout."],
+  ["AC06", "PayMongo or GCash rejected this recipient as BlockedAccount. Verify the exact registered GCash account name and number before retrying the payout."],
+  ["AC07", "The responder GCash account is closed. Please enter an active GCash account before retrying the payout."],
+]);
+
+function getPayMongoDestinationAccountFailureReason(source) {
+  const text = JSON.stringify(source ?? {}).toLowerCase();
+
+  for (const [code, reason] of payMongoDestinationAccountFailures.entries()) {
+    if (text.includes(code.toLowerCase())) {
+      return reason;
+    }
+  }
+
+  if (text.includes("blockedaccount") || text.includes("blocked account")) {
+    return payMongoDestinationAccountFailures.get("AC06");
+  }
+
+  if (text.includes("closedaccount") || text.includes("closed account")) {
+    return payMongoDestinationAccountFailures.get("AC04");
+  }
+
+  if (text.includes("incorrectaccountnumber") || text.includes("invalidcreditoraccountnumber")) {
+    return payMongoDestinationAccountFailures.get("AC03");
+  }
+
+  return "";
+}
+
+function getPayMongoProviderFailureReason(attributes) {
+  return (
+    attributes?.provider_error ??
+    attributes?.provider_error_code ??
+    attributes?.failure_reason ??
+    "PayMongo wallet transfer failed."
+  );
+}
+
+function getPayMongoErrorDetail(payload) {
+  const error = payload?.errors?.[0] ?? null;
+  return (
+    error?.detail ??
+    error?.code ??
+    payload?.message ??
+    payload?.data?.attributes?.provider_error ??
+    payload?.data?.attributes?.provider_error_code ??
+    "PayMongo wallet transfer failed."
+  );
+}
+
+function isPayMongoInsufficientWalletBalanceError(error) {
+  const text = [
+    error?.message,
+    error?.providerPayload?.errors?.[0]?.detail,
+    error?.providerPayload?.errors?.[0]?.code,
+    error?.providerPayload?.message,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return text.includes("source_account_balance") && text.includes("insufficient");
+}
+
+function getDateFromFirestoreValue(value) {
+  return value?.toDate?.() ?? (value ? new Date(value) : null);
+}
+
+function isResponderPayoutRetryDue(payout) {
+  const retryAt = getDateFromFirestoreValue(payout?.next_retry_at);
+  return !retryAt || Number.isNaN(retryAt.getTime()) || retryAt.getTime() <= Date.now();
 }
 
 async function createPayMongoWalletTransfer(payout) {
@@ -1335,25 +1537,38 @@ async function createPayMongoWalletTransfer(payout) {
 
   const amountInCentavos = Math.round(Number(payout.net_amount ?? 0) * 100);
   if (!Number.isFinite(amountInCentavos) || amountInCentavos <= 0) {
-    throw new Error("A valid responder payout amount is required.");
+    throw new Error("A valid payout amount is required.");
+  }
+
+  const destinationAccountNumber = normalizePayoutAccountNumber(payout.destination_account);
+  const destinationAccountName = String(payout.destination_name ?? "").trim();
+  if (!destinationAccountName || !destinationAccountNumber) {
+    throw new Error("Responder GCash payout name and number are required before transfer.");
+  }
+  if (!isValidGcashAccountNumber(destinationAccountNumber)) {
+    throw new Error("Responder GCash number must be an active 11-digit Philippine mobile number starting with 09.");
   }
 
   const transfer = {
-    source_account: {
-      type: "wallet",
-      wallet_id: walletId,
-    },
-    destination_account: {
-      number: String(payout.destination_account ?? "").trim(),
-      name: String(payout.destination_name ?? "").trim(),
-      bic: destinationBic,
-      type: "bank",
-    },
     amount: amountInCentavos,
     currency: "PHP",
     provider: transferProvider,
+    receiver: {
+      bank_account_number: destinationAccountNumber,
+      bank_account_name: destinationAccountName,
+      bank_code: destinationBic,
+    },
     callback_url: callbackUrl || undefined,
-    description: `Soteria responder payout ${payout.dispatch_id}`,
+    type: "send_money",
+    purpose: payout.purpose ?? "Soteria payout",
+    description: payout.description ?? `Soteria payout ${payout.id ?? ""}`,
+    metadata: {
+      payout_id: payout.id ?? "",
+      dispatch_id: payout.dispatch_id ?? "",
+      service_payment_id: payout.service_payment_id ?? "",
+      redemption_id: payout.redemption_id ?? "",
+      payout_type: payout.payout_type ?? "responder",
+    },
   };
 
   const response = await fetch(`https://api.paymongo.com/v1/wallets/${walletId}/transactions`, {
@@ -1372,11 +1587,7 @@ async function createPayMongoWalletTransfer(payout) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail =
-      payload?.errors?.[0]?.detail ??
-      payload?.errors?.[0]?.code ??
-      payload?.message ??
-      "PayMongo wallet transfer failed.";
+    const detail = getPayMongoErrorDetail(payload);
     const error = new Error(detail);
     error.statusCode = response.status;
     error.providerPayload = payload;
@@ -1386,7 +1597,33 @@ async function createPayMongoWalletTransfer(payout) {
   return payload?.data ?? payload;
 }
 
+async function fetchPayMongoWalletTransfer(providerPayoutId) {
+  const { secretKey } = getPayMongoConfig();
+  const { walletId } = getPayMongoWalletTransferConfig();
+  if (!secretKey || !walletId || !providerPayoutId) {
+    return null;
+  }
+
+  const response = await fetch(`https://api.paymongo.com/v1/wallets/${walletId}/transactions/${providerPayoutId}`, {
+    headers: {
+      Authorization: `Basic ${encodePayMongoAuth(secretKey)}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload = await response.json().catch(() => null);
+  return payload?.data ?? payload;
+}
+
 async function createResponderPayoutForDispatch(dispatch, dispatchDetails, payment) {
+  if (!dispatch?.id) {
+    throw new Error("Dispatch id is required before creating a responder payout.");
+  }
+
   const existingPayouts = await getDocuments("responder_payouts", { dispatch_id: dispatch.id });
   const existing = existingPayouts[0] ?? null;
   if (existing) {
@@ -1395,52 +1632,219 @@ async function createResponderPayoutForDispatch(dispatch, dispatchDetails, payme
 
   const responderUserId = dispatchDetails.agent?.id ?? getDispatchResponderUserId(dispatch);
   const responderProfile = responderUserId ? await getAgentProfileByUserId(responderUserId) : null;
-  const gcashName = String(responderProfile?.payout_gcash_name ?? "").trim();
-  const gcashNumber = String(responderProfile?.payout_gcash_number ?? "").trim();
-  const hasDestination = Boolean(gcashName && gcashNumber);
+  const responderUser = responderUserId ? await getDocument(collections.users, responderUserId) : null;
+  const gcashName = resolvePayoutAccountName(
+    responderProfile?.payout_gcash_name,
+    responderUser?.full_name,
+  );
+  const gcashNumber = normalizePayoutAccountNumber(responderProfile?.payout_gcash_number);
+  const hasDestination = Boolean(gcashName && isValidGcashAccountNumber(gcashNumber));
   const transferReference = payment.transferReference || `SOT-${dispatch.id}-${Date.now()}`;
 
-  const payoutId = await createDocument("responder_payouts", {
-    dispatch_id: dispatch.id,
-    service_payment_id: dispatch.service_payment_id ?? null,
-    responder_user_id: responderUserId ?? "",
-    motorist_user_id: dispatchDetails.motorist?.id ?? "",
-    gross_amount: payment.totalAmount,
-    commission_amount: payment.commissionAmount,
-    net_amount: payment.serviceAmount,
-    currency: "PHP",
-    destination_type: "gcash",
-    destination_name: gcashName,
-    destination_account: gcashNumber,
-    destination_notes: responderProfile?.payout_notes ?? "",
-    provider: getPayoutProviderMode(),
-    provider_payout_id: null,
-    transfer_reference: transferReference,
-    status: hasDestination ? "queued" : "details_required",
-    failure_reason: hasDestination ? "" : "Responder GCash payout details are missing.",
-    requested_at: serverTimestamp(),
-    processed_at: null,
-    paid_at: null,
+  const payoutId = `dispatch_${dispatch.id}`;
+  const payoutRef = db.collection("responder_payouts").doc(payoutId);
+  await db.runTransaction(async (transaction) => {
+    const existingPayout = await transaction.get(payoutRef);
+    if (existingPayout.exists) {
+      return;
+    }
+
+    transaction.set(payoutRef, {
+      id: payoutId,
+      dispatch_id: dispatch.id,
+      service_payment_id: dispatch.service_payment_id ?? null,
+      responder_user_id: responderUserId ?? "",
+      motorist_user_id: dispatchDetails.motorist?.id ?? "",
+      gross_amount: payment.baseServiceAmount,
+      payout_transfer_fee: payment.payoutTransferFee,
+      commission_amount: payment.commissionAmount,
+      net_amount: payment.serviceAmount,
+      charged_total_amount: payment.totalAmount,
+      currency: "PHP",
+      destination_type: "gcash",
+      destination_name: gcashName,
+      destination_account: gcashNumber,
+      destination_notes: responderProfile?.payout_notes ?? "",
+      provider: getPayoutProviderMode(),
+      provider_payout_id: null,
+      transfer_reference: transferReference,
+      status: hasDestination ? "queued" : "details_required",
+      failure_reason: hasDestination
+        ? ""
+        : "Responder GCash payout details are missing or invalid. Use an active 11-digit GCash number starting with 09.",
+      requested_at: serverTimestamp(),
+      processed_at: null,
+      paid_at: null,
+      created_at: serverTimestamp(),
+      updated_at: serverTimestamp(),
+    });
   });
 
   return getDocument("responder_payouts", payoutId);
 }
 
-async function processResponderPayout(payout) {
+async function refreshResponderPayoutDestination(payout) {
+  if (!payout?.id || !payout.responder_user_id) {
+    return payout;
+  }
+
+  const responderProfile = await getAgentProfileByUserId(payout.responder_user_id);
+  const responderUser = await getDocument(collections.users, payout.responder_user_id);
+  const gcashName = resolvePayoutAccountName(
+    responderProfile?.payout_gcash_name,
+    responderUser?.full_name,
+  );
+  const gcashNumber = normalizePayoutAccountNumber(responderProfile?.payout_gcash_number);
+  if (!gcashName || !isValidGcashAccountNumber(gcashNumber)) {
+    await updateDocument("responder_payouts", payout.id, {
+      status: "details_required",
+      destination_name: gcashName,
+      destination_account: gcashNumber,
+      destination_notes: responderProfile?.payout_notes ?? "",
+      failure_reason:
+        "Responder GCash payout details are missing or invalid. Use an active 11-digit GCash number starting with 09.",
+    });
+    return getDocument("responder_payouts", payout.id);
+  }
+
+  const shouldRequeue = ["failed", "details_required"].includes(String(payout.status ?? ""));
+  const currentDestinationKey = getPayoutDestinationKey(payout.destination_name, payout.destination_account);
+  const nextDestinationKey = getPayoutDestinationKey(gcashName, gcashNumber);
+  const lastRejectedDestinationKey = String(payout.rejected_destination_key ?? "");
+  const hasDestinationFailure =
+    Boolean(getPayMongoDestinationAccountFailureReason(payout.provider_payload)) ||
+    Array.from(payMongoDestinationAccountFailures.values()).some((reason) => reason === payout.failure_reason);
+  const isSameRejectedDestination =
+    shouldRequeue &&
+    nextDestinationKey &&
+    nextDestinationKey === currentDestinationKey &&
+    (nextDestinationKey === lastRejectedDestinationKey || hasDestinationFailure);
+
+  if (isSameRejectedDestination) {
+    await updateDocument("responder_payouts", payout.id, {
+      destination_name: gcashName,
+      destination_account: gcashNumber,
+      destination_notes: responderProfile?.payout_notes ?? "",
+      status: "details_required",
+      failure_reason:
+        payout.failure_reason ||
+        "The responder GCash account was rejected by PayMongo. Please use a different active GCash account before retrying the payout.",
+      rejected_destination_key: nextDestinationKey,
+    });
+    return getDocument("responder_payouts", payout.id);
+  }
+
+  await updateDocument("responder_payouts", payout.id, {
+    destination_name: gcashName,
+    destination_account: gcashNumber,
+    destination_notes: responderProfile?.payout_notes ?? "",
+    status: shouldRequeue ? "queued" : payout.status,
+    failure_reason: shouldRequeue ? "" : payout.failure_reason ?? "",
+    rejected_destination_key: shouldRequeue ? null : payout.rejected_destination_key ?? null,
+  });
+
+  return getDocument("responder_payouts", payout.id);
+}
+
+async function syncPayMongoResponderPayoutStatus(payout) {
+  if (!payout?.id || payout.provider !== "paymongo" || !payout.provider_payout_id) {
+    return payout;
+  }
+
+  const transfer = await fetchPayMongoWalletTransfer(payout.provider_payout_id);
+  if (!transfer) {
+    return payout;
+  }
+
+  const { attributes } = getPayMongoTransferData(transfer);
+  const providerStatus = attributes.status ?? payout.provider_status ?? "processing";
+  const paid = isPayMongoPayoutPaidStatus(providerStatus);
+  const failed = isPayMongoPayoutFailedStatus(providerStatus);
+  const destinationFailureReason = failed ? getPayMongoDestinationAccountFailureReason(attributes) : "";
+
+  await updateDocument("responder_payouts", payout.id, {
+    status: paid ? "paid" : failed && destinationFailureReason ? "details_required" : failed ? "failed" : "processing",
+    provider_status: providerStatus,
+    provider_payload: transfer,
+    paid_at: paid ? serverTimestamp() : null,
+    failure_reason: failed ? destinationFailureReason || getPayMongoProviderFailureReason(attributes) : "",
+    rejected_destination_key: failed && destinationFailureReason
+      ? getPayoutDestinationKey(payout.destination_name, payout.destination_account)
+      : null,
+  });
+
+  return getDocument("responder_payouts", payout.id);
+}
+
+async function updateDispatchPayoutFromResponderPayout(dispatchId, processedPayout, transferReference = null) {
+  if (!dispatchId) {
+    return;
+  }
+
+  const dispatch = await getDocument(collections.dispatches, dispatchId);
+  if (!dispatch) {
+    console.warn(
+      `[PAYOUT] Dispatch ${dispatchId} is missing; skipped payout status sync for responder payout ${processedPayout?.id ?? "unknown"}.`,
+    );
+    return;
+  }
+
+  const status = processedPayout?.status ?? "queued";
+  const payoutStatus =
+    status === "paid"
+      ? "auto_transferred"
+      : status === "awaiting_wallet_funding"
+        ? "awaiting_wallet_funding"
+      : status === "details_required"
+        ? "payout_details_required"
+        : status;
+
+  await updateDocument(collections.dispatches, dispatchId, {
+    payout_status: payoutStatus,
+    payout_transferred_at: status === "paid" ? serverTimestamp() : null,
+    transfer_reference: processedPayout?.transfer_reference ?? transferReference,
+    responder_payout_id: processedPayout?.id ?? null,
+  });
+}
+
+async function processResponderPayout(payout, options = {}) {
   if (!payout) {
     return null;
   }
 
-  if (["paid", "processing"].includes(String(payout.status ?? ""))) {
+  if (payout.status === "paid") {
     return payout;
   }
 
+  if (payout.status === "processing") {
+    return syncPayMongoResponderPayoutStatus(payout);
+  }
+
   if (payout.status === "details_required") {
-    return payout;
+    payout = await refreshResponderPayoutDestination(payout);
+    if (payout.status === "details_required") {
+      return payout;
+    }
   }
 
   const provider = getPayoutProviderMode();
   const payoutId = payout.id;
+  const { maxAttempts } = getPayMongoWalletTransferConfig();
+  const attemptCount = Number(payout.payout_attempt_count ?? 0);
+
+  if (payout.status === "awaiting_wallet_funding" && !isResponderPayoutRetryDue(payout)) {
+    return payout;
+  }
+
+  if (payout.status === "failed") {
+    if (!options.force && attemptCount >= maxAttempts) {
+      return payout;
+    }
+    payout = await refreshResponderPayoutDestination(payout);
+    if (payout.status === "details_required") {
+      return payout;
+    }
+  }
 
   if (provider === "manual") {
     await updateDocument("responder_payouts", payoutId, {
@@ -1471,16 +1875,16 @@ async function processResponderPayout(payout) {
         status: "processing",
         provider,
         processed_at: serverTimestamp(),
+        payout_attempt_count: attemptCount + 1,
+        last_attempted_at: serverTimestamp(),
         failure_reason: "",
+        rejected_destination_key: null,
       });
 
       const transfer = await createPayMongoWalletTransfer(payout);
-      const providerPayoutId = transfer?.id ?? transfer?.data?.id ?? "";
-      const providerStatus =
-        transfer?.attributes?.status ??
-        transfer?.data?.attributes?.status ??
-        "processing";
-      const paid = ["succeeded", "success", "completed", "paid"].includes(String(providerStatus).toLowerCase());
+      const { id: providerPayoutId, attributes } = getPayMongoTransferData(transfer);
+      const providerStatus = attributes.status ?? "processing";
+      const paid = isPayMongoPayoutPaidStatus(providerStatus);
 
       await updateDocument("responder_payouts", payoutId, {
         status: paid ? "paid" : "processing",
@@ -1490,9 +1894,39 @@ async function processResponderPayout(payout) {
         provider_payload: transfer,
         processed_at: serverTimestamp(),
         paid_at: paid ? serverTimestamp() : null,
+        next_retry_at: null,
         failure_reason: "",
       });
     } catch (error) {
+      if (isPayMongoInsufficientWalletBalanceError(error)) {
+        const { retryDelayMs } = getPayMongoWalletTransferConfig();
+        await updateDocument("responder_payouts", payoutId, {
+          status: "awaiting_wallet_funding",
+          provider,
+          provider_status: "insufficient_wallet_balance",
+          processed_at: serverTimestamp(),
+          next_retry_at: new Date(Date.now() + retryDelayMs),
+          failure_reason:
+            "PayMongo Wallet has insufficient available balance for this responder GCash transfer. It will retry automatically after the wallet is funded.",
+          provider_payload: error?.providerPayload ?? null,
+        });
+        return getDocument("responder_payouts", payoutId);
+      }
+
+      const destinationFailureReason = getPayMongoDestinationAccountFailureReason(error?.providerPayload ?? error);
+      if (destinationFailureReason) {
+        await updateDocument("responder_payouts", payoutId, {
+          status: "details_required",
+          provider,
+          provider_status: "destination_account_rejected",
+          processed_at: serverTimestamp(),
+          failure_reason: destinationFailureReason,
+          provider_payload: error?.providerPayload ?? null,
+          rejected_destination_key: getPayoutDestinationKey(payout.destination_name, payout.destination_account),
+        });
+        return getDocument("responder_payouts", payoutId);
+      }
+
       await updateDocument("responder_payouts", payoutId, {
         status: "failed",
         provider,
@@ -1518,22 +1952,244 @@ async function processResponderPayout(payout) {
 async function queueAndProcessResponderPayout(dispatch, dispatchDetails, payment) {
   const payout = await createResponderPayoutForDispatch(dispatch, dispatchDetails, payment);
   const processedPayout = await processResponderPayout(payout);
-  const status = processedPayout?.status ?? "queued";
-  const payoutStatus =
-    status === "paid"
-      ? "auto_transferred"
-      : status === "details_required"
-        ? "payout_details_required"
-        : status;
-
-  await updateDocument(collections.dispatches, dispatch.id, {
-    payout_status: payoutStatus,
-    payout_transferred_at: status === "paid" ? serverTimestamp() : null,
-    transfer_reference: processedPayout?.transfer_reference ?? payment.transferReference,
-    responder_payout_id: processedPayout?.id ?? payout?.id ?? null,
-  });
+  await updateDispatchPayoutFromResponderPayout(dispatch.id, processedPayout ?? payout, payment.transferReference);
 
   return processedPayout;
+}
+
+async function processCommunityRedemptionPayout(redemption) {
+  if (!redemption?.id) {
+    return null;
+  }
+
+  if (["paid", "rejected"].includes(normalizeCommunityRedemptionStatus(redemption.status))) {
+    return redemption;
+  }
+
+  if (redemption.status === "processing" && redemption.provider === "paymongo" && redemption.provider_payout_id) {
+    const transfer = await fetchPayMongoWalletTransfer(redemption.provider_payout_id);
+    if (transfer) {
+      const { attributes } = getPayMongoTransferData(transfer);
+      const providerStatus = attributes.status ?? redemption.provider_status ?? "processing";
+      const paid = isPayMongoPayoutPaidStatus(providerStatus);
+      const failed = isPayMongoPayoutFailedStatus(providerStatus);
+      const destinationFailureReason = failed ? getPayMongoDestinationAccountFailureReason(attributes) : "";
+
+      await updateDocument(collections.communityRedemptions, redemption.id, {
+        status: paid ? "paid" : failed && destinationFailureReason ? "details_required" : failed ? "failed" : "processing",
+        provider_status: providerStatus,
+        provider_payload: transfer,
+        paid_at: paid ? serverTimestamp() : null,
+        reviewed_at: paid ? serverTimestamp() : null,
+        failure_reason: failed ? destinationFailureReason || getPayMongoProviderFailureReason(attributes) : "",
+      });
+      return getDocument(collections.communityRedemptions, redemption.id);
+    }
+
+    return redemption;
+  }
+
+  const provider = getPayoutProviderMode();
+  const payoutTransferFee = Number(redemption.payout_transfer_fee ?? getCommunityPayoutTransferFee());
+  const cashValue = Number(redemption.cash_value ?? 0);
+  const netPayoutAmount = Number(redemption.net_payout_amount ?? Math.max(0, cashValue - payoutTransferFee));
+  const destinationName = normalizePersonName(redemption.gcash_name);
+  const destinationAccount = normalizePayoutAccountNumber(redemption.gcash_number);
+
+  if (!destinationName || !isValidGcashAccountNumber(destinationAccount)) {
+    await updateDocument(collections.communityRedemptions, redemption.id, {
+      status: "details_required",
+      payout_transfer_fee: payoutTransferFee,
+      net_payout_amount: netPayoutAmount,
+      destination_account: destinationAccount,
+      failure_reason: "Community payout GCash details are missing or invalid. Use an active 11-digit GCash number starting with 09.",
+      processed_at: serverTimestamp(),
+    });
+    return getDocument(collections.communityRedemptions, redemption.id);
+  }
+
+  if (!Number.isFinite(netPayoutAmount) || netPayoutAmount <= 0) {
+    await updateDocument(collections.communityRedemptions, redemption.id, {
+      status: "failed",
+      payout_transfer_fee: payoutTransferFee,
+      net_payout_amount: netPayoutAmount,
+      failure_reason: "Reward cash value must be greater than the PHP 10 payout transaction fee.",
+      processed_at: serverTimestamp(),
+    });
+    return getDocument(collections.communityRedemptions, redemption.id);
+  }
+
+  if (provider === "manual") {
+    await updateDocument(collections.communityRedemptions, redemption.id, {
+      status: "pending",
+      provider,
+      payout_transfer_fee: payoutTransferFee,
+      net_payout_amount: netPayoutAmount,
+      failure_reason: "",
+      processed_at: serverTimestamp(),
+    });
+    return getDocument(collections.communityRedemptions, redemption.id);
+  }
+
+  if (provider === "simulated" || (process.env.NODE_ENV !== "production" && provider !== "paymongo")) {
+    await updateDocument(collections.communityRedemptions, redemption.id, {
+      status: "paid",
+      provider,
+      provider_payout_id: `SIM-GCASH-COMMUNITY-${redemption.id}`,
+      provider_status: "paid",
+      payout_transfer_fee: payoutTransferFee,
+      net_payout_amount: netPayoutAmount,
+      processed_at: serverTimestamp(),
+      paid_at: serverTimestamp(),
+      reviewed_at: serverTimestamp(),
+      failure_reason: "",
+    });
+    return getDocument(collections.communityRedemptions, redemption.id);
+  }
+
+  if (provider === "paymongo") {
+    try {
+      await updateDocument(collections.communityRedemptions, redemption.id, {
+        status: "processing",
+        provider,
+        payout_transfer_fee: payoutTransferFee,
+        net_payout_amount: netPayoutAmount,
+        processed_at: serverTimestamp(),
+        failure_reason: "",
+      });
+
+      const transfer = await createPayMongoWalletTransfer({
+        id: `community_${redemption.id}`,
+        redemption_id: redemption.id,
+        payout_type: "community",
+        net_amount: netPayoutAmount,
+        destination_name: destinationName,
+        destination_account: destinationAccount,
+        purpose: "Community reward redemption payout",
+        description: `Soteria community reward payout ${redemption.id}`,
+      });
+      const { id: providerPayoutId, attributes } = getPayMongoTransferData(transfer);
+      const providerStatus = attributes.status ?? "processing";
+      const paid = isPayMongoPayoutPaidStatus(providerStatus);
+
+      await updateDocument(collections.communityRedemptions, redemption.id, {
+        status: paid ? "paid" : "processing",
+        provider,
+        provider_payout_id: providerPayoutId,
+        provider_status: providerStatus,
+        provider_payload: transfer,
+        processed_at: serverTimestamp(),
+        paid_at: paid ? serverTimestamp() : null,
+        reviewed_at: paid ? serverTimestamp() : null,
+        failure_reason: "",
+      });
+    } catch (error) {
+      if (isPayMongoInsufficientWalletBalanceError(error)) {
+        await updateDocument(collections.communityRedemptions, redemption.id, {
+          status: "awaiting_wallet_funding",
+          provider,
+          provider_status: "insufficient_wallet_balance",
+          provider_payload: error?.providerPayload ?? null,
+          processed_at: serverTimestamp(),
+          failure_reason:
+            "PayMongo Wallet has insufficient available balance for this community payout. It will retry when payout processing runs again.",
+        });
+        return getDocument(collections.communityRedemptions, redemption.id);
+      }
+
+      const destinationFailureReason = getPayMongoDestinationAccountFailureReason(error?.providerPayload ?? error);
+      await updateDocument(collections.communityRedemptions, redemption.id, {
+        status: destinationFailureReason ? "details_required" : "failed",
+        provider,
+        provider_status: destinationFailureReason ? "destination_account_rejected" : "failed",
+        provider_payload: error?.providerPayload ?? null,
+        processed_at: serverTimestamp(),
+        failure_reason: destinationFailureReason || (error instanceof Error ? error.message : "PayMongo wallet transfer failed."),
+      });
+    }
+
+    return getDocument(collections.communityRedemptions, redemption.id);
+  }
+
+  await updateDocument(collections.communityRedemptions, redemption.id, {
+    status: "pending",
+    provider,
+    payout_transfer_fee: payoutTransferFee,
+    net_payout_amount: netPayoutAmount,
+    processed_at: serverTimestamp(),
+    failure_reason:
+      "Live payout provider is not configured yet. Enable PayMongo Money Movement/Disbursements or another payout API.",
+  });
+  return getDocument(collections.communityRedemptions, redemption.id);
+}
+
+async function retryResponderPayout(payoutId, options = {}) {
+  const payout = await getDocument("responder_payouts", payoutId);
+  if (!payout) {
+    return null;
+  }
+
+  const refreshedPayout = await refreshResponderPayoutDestination(payout);
+  const processedPayout = await processResponderPayout(refreshedPayout, { force: true, ...options });
+  await updateDispatchPayoutFromResponderPayout(payout.dispatch_id, processedPayout ?? refreshedPayout);
+  return processedPayout ?? refreshedPayout;
+}
+
+async function retryResponderPayoutsForResponder(responderUserId) {
+  if (!responderUserId) {
+    return [];
+  }
+
+  const payouts = await getDocuments("responder_payouts", { responder_user_id: responderUserId });
+  const retryablePayouts = payouts.filter((payout) =>
+    ["failed", "details_required", "awaiting_wallet_funding"].includes(String(payout.status ?? "")),
+  );
+
+  const results = [];
+  for (const payout of retryablePayouts) {
+    results.push(await retryResponderPayout(payout.id));
+  }
+
+  return results;
+}
+
+async function processDueResponderPayouts() {
+  if (getPayoutProviderMode() !== "paymongo") {
+    return [];
+  }
+
+  const payouts = await getDocuments("responder_payouts");
+  const duePayouts = payouts.filter((payout) =>
+    ["queued", "awaiting_wallet_funding", "processing", "details_required"].includes(String(payout.status ?? "")) &&
+    isResponderPayoutRetryDue(payout),
+  );
+  const results = [];
+
+  for (const payout of duePayouts) {
+    const processedPayout = await processResponderPayout(payout, { force: true });
+    await updateDispatchPayoutFromResponderPayout(payout.dispatch_id, processedPayout ?? payout);
+    results.push(processedPayout ?? payout);
+  }
+
+  return results;
+}
+
+async function processDueCommunityRedemptionPayouts() {
+  if (getPayoutProviderMode() !== "paymongo") {
+    return [];
+  }
+
+  const redemptions = await getDocuments(collections.communityRedemptions);
+  const dueRedemptions = redemptions.filter((redemption) =>
+    ["pending", "processing", "awaiting_wallet_funding"].includes(String(redemption.status ?? "pending")),
+  );
+  const results = [];
+
+  for (const redemption of dueRedemptions) {
+    results.push(await processCommunityRedemptionPayout(redemption));
+  }
+
+  return results;
 }
 
 async function listResponderPayouts() {
@@ -1570,21 +2226,40 @@ async function buildDispatchPaymentSummary(dispatch, dispatchDetails = null) {
     ? await getDocument(collections.users, details.motorist.id)
     : null;
   const subscriptionStatus = hasActiveSubscription(motoristUser) ? "active" : "inactive";
+  const subscriptionPlan =
+    subscriptionStatus === "active" ? normalizeSubscriptionPlan(motoristUser?.subscription_plan) : null;
   const commissionRate = subscriptionStatus === "active" ? 0.05 : 0.2;
-  const totalAmount = normalizeCurrencyInput(
-    dispatch.total_amount ??
-    dispatch.payment_total_amount ??
-    dispatch.quoted_total_amount,
+  const hasExplicitServiceQuote =
+    dispatch.base_service_amount != null ||
+    dispatch.payment_base_service_amount != null ||
+    dispatch.quoted_service_amount != null ||
+    dispatch.quoted_total_amount != null;
+  const payoutTransferFee = normalizeCurrencyInput(
+    dispatch.payout_transfer_fee ?? (hasExplicitServiceQuote && subscriptionPlan !== "annual"
+      ? getResponderPayoutTransferFee()
+      : 0),
   );
-  const commissionAmount = roundCurrency(totalAmount * commissionRate);
-  const serviceAmount = roundCurrency(Math.max(0, totalAmount - commissionAmount));
+  const baseServiceAmount = normalizeCurrencyInput(
+    dispatch.base_service_amount ??
+    dispatch.payment_base_service_amount ??
+    dispatch.quoted_service_amount ??
+    dispatch.payment_total_amount ??
+    dispatch.quoted_total_amount ??
+    dispatch.total_amount,
+  );
+  const commissionAmount = roundCurrency(baseServiceAmount * commissionRate);
+  const serviceAmount = baseServiceAmount;
+  const totalAmount = roundCurrency(baseServiceAmount + commissionAmount + payoutTransferFee);
 
   return {
     totalAmount,
+    baseServiceAmount,
+    payoutTransferFee,
     serviceAmount,
     commissionAmount,
     commissionRate,
     subscriptionStatus,
+    subscriptionPlan,
     paymentStatus: "system_received",
     payoutStatus: "auto_transferred",
     payoutTransferredAt: null,
@@ -2085,7 +2760,6 @@ function formatSubscriptionPlanLabel(plan) {
 }
 
 const communityRewardCatalog = [
-  { id: "starter", title: "Starter Cash Ticket", coinsRequired: 100, cashValue: 10 },
   { id: "supporter", title: "Supporter Cash Ticket", coinsRequired: 250, cashValue: 25 },
   { id: "agent", title: "Responder Cash Ticket", coinsRequired: 500, cashValue: 50 },
 ];
@@ -2093,7 +2767,14 @@ const communityRewardCatalog = [
 const COMMUNITY_DAILY_COIN_LIMIT = 4;
 
 function normalizeCommunityRedemptionStatus(value) {
-  if (value === "paid" || value === "rejected") {
+  if (
+    value === "paid" ||
+    value === "rejected" ||
+    value === "processing" ||
+    value === "failed" ||
+    value === "details_required" ||
+    value === "awaiting_wallet_funding"
+  ) {
     return value;
   }
 
@@ -2110,6 +2791,36 @@ function getCommunityCoinBalance(user) {
 
 function getCommunityLifetimeCoins(user) {
   return Number(user?.community_lifetime_coins ?? 0);
+}
+
+function formatCommunityRedemption(redemption) {
+  const cashValue = Number(redemption.cash_value ?? 0);
+  const payoutTransferFee = Number(redemption.payout_transfer_fee ?? getCommunityPayoutTransferFee());
+
+  return {
+    id: redemption.id,
+    userId: redemption.user_id,
+    userName: redemption.user_name ?? "Community Member",
+    userPhone: redemption.user_phone ?? "",
+    rewardId: redemption.reward_id ?? "",
+    rewardTitle: redemption.reward_title ?? "Reward Ticket",
+    cashValue,
+    coinsRequired: Number(redemption.coins_required ?? 0),
+    coinsSpent: Number(redemption.coins_spent ?? 0),
+    gcashName: redemption.gcash_name ?? "",
+    gcashNumber: redemption.gcash_number ?? "",
+    status: normalizeCommunityRedemptionStatus(redemption.status),
+    submittedAt: formatFirestoreDateTime(redemption.created_at),
+    reviewedAt: formatFirestoreDateTime(redemption.reviewed_at),
+    payoutTransferFee,
+    netPayoutAmount: Number(redemption.net_payout_amount ?? Math.max(0, cashValue - payoutTransferFee)),
+    provider: redemption.provider ?? getPayoutProviderMode(),
+    providerPayoutId: redemption.provider_payout_id ?? null,
+    providerStatus: redemption.provider_status ?? null,
+    failureReason: redemption.failure_reason ?? "",
+    processedAt: formatFirestoreDateTime(redemption.processed_at),
+    paidAt: formatFirestoreDateTime(redemption.paid_at),
+  };
 }
 
 function formatCommunityProfile(user) {
@@ -2308,22 +3019,7 @@ async function listCommunityRedemptions() {
   const redemptions = await getDocuments(collections.communityRedemptions);
 
   return redemptions
-    .map((redemption) => ({
-      id: redemption.id,
-      userId: redemption.user_id,
-      userName: redemption.user_name ?? "Community Member",
-      userPhone: redemption.user_phone ?? "",
-      rewardId: redemption.reward_id ?? "",
-      rewardTitle: redemption.reward_title ?? "Reward Ticket",
-      cashValue: Number(redemption.cash_value ?? 0),
-      coinsRequired: Number(redemption.coins_required ?? 0),
-      coinsSpent: Number(redemption.coins_spent ?? 0),
-      gcashName: redemption.gcash_name ?? "",
-      gcashNumber: redemption.gcash_number ?? "",
-      status: normalizeCommunityRedemptionStatus(redemption.status),
-      submittedAt: formatFirestoreDateTime(redemption.created_at),
-      reviewedAt: formatFirestoreDateTime(redemption.reviewed_at),
-    }))
+    .map(formatCommunityRedemption)
     .sort((a, b) => {
       const aTime = a.submittedAt ? Date.parse(a.submittedAt) : 0;
       const bTime = b.submittedAt ? Date.parse(b.submittedAt) : 0;
@@ -2472,6 +3168,8 @@ async function buildAdminEarningsSummary() {
     .filter((dispatch) => dispatch.commission_amount != null)
     .map((dispatch) => ({
       id: dispatch.id,
+      baseServiceAmount: Number(dispatch.base_service_amount ?? dispatch.total_amount ?? 0),
+      payoutTransferFee: Number(dispatch.payout_transfer_fee ?? 0),
       totalAmount: Number(dispatch.total_amount ?? 0),
       serviceAmount: Number(dispatch.service_amount ?? 0),
       commissionAmount: Number(dispatch.commission_amount ?? 0),
@@ -2574,6 +3272,25 @@ async function resolveForumAuthor(userId, role) {
     role: normalizedRole,
     name: user.full_name || user.username || "Soteria User",
   };
+}
+
+async function requireForumAdmin(adminUserId) {
+  const normalizedAdminUserId = String(adminUserId ?? "").trim();
+
+  if (!normalizedAdminUserId) {
+    const error = new Error("adminUserId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const adminUser = await getDocument(collections.users, normalizedAdminUserId);
+  if (!adminUser || adminUser.role !== "admin") {
+    const error = new Error("Admin permission is required to manage forum content.");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  return adminUser;
 }
 
 async function listForumReplies(threadId) {
@@ -3110,21 +3827,33 @@ app.patch("/api/dispatches/:dispatchId/status", async (request, response, next) 
     if (status === "accepted") updateData.accepted_at = serverTimestamp();
     if (status === "arrived") updateData.arrived_at = serverTimestamp();
     if (status === "completed") {
+      const quotedServiceAmount = normalizeCurrencyInput(totalAmount);
+      const minimumPayoutAmount = getResponderMinimumPayoutAmount();
+      if (minimumPayoutAmount > 0 && quotedServiceAmount < minimumPayoutAmount) {
+        response.status(400).json({
+          error: `Responder service payout must be at least PHP ${minimumPayoutAmount.toLocaleString("en-PH")}.`,
+        });
+        return;
+      }
+
       const dispatchDetails = await buildDispatchDetails(dispatch);
       const payment = await buildDispatchPaymentSummary(
         {
           ...dispatch,
-          total_amount: totalAmount,
+          quoted_service_amount: quotedServiceAmount,
         },
         dispatchDetails,
       );
 
       updateData.dispatch_status = "payment_pending";
       updateData.total_amount = payment.totalAmount;
+      updateData.base_service_amount = payment.baseServiceAmount;
+      updateData.payout_transfer_fee = payment.payoutTransferFee;
       updateData.service_amount = payment.serviceAmount;
       updateData.commission_amount = payment.commissionAmount;
       updateData.commission_rate = payment.commissionRate;
       updateData.motorist_subscription_status = payment.subscriptionStatus;
+      updateData.motorist_subscription_plan = payment.subscriptionPlan;
       updateData.payment_status = "awaiting_motorist_payment";
       updateData.payment_method = null;
       updateData.payout_status = "pending";
@@ -3193,6 +3922,8 @@ app.post("/api/dispatches/:dispatchId/payment", async (request, response, next) 
           paymentUrl: existingPayment.payment_url,
           servicePaymentId: existingPayment.id,
           amount: Number(existingPayment.amount ?? payment.totalAmount),
+          baseServiceAmount: Number(existingPayment.base_service_amount ?? payment.baseServiceAmount),
+          payoutTransferFee: Number(existingPayment.payout_transfer_fee ?? payment.payoutTransferFee),
         });
         return;
       }
@@ -3208,6 +3939,11 @@ app.post("/api/dispatches/:dispatchId/payment", async (request, response, next) 
         motorist_user_id: dispatchDetails.motorist?.id ?? "",
         responder_user_id: dispatchDetails.agent?.id ?? "",
         amount: payment.totalAmount,
+        base_service_amount: payment.baseServiceAmount,
+        payout_transfer_fee: payment.payoutTransferFee,
+        service_amount: payment.serviceAmount,
+        commission_amount: payment.commissionAmount,
+        commission_rate: payment.commissionRate,
         currency: "PHP",
         status: "pending_payment",
         provider: "paymongo",
@@ -3234,6 +3970,8 @@ app.post("/api/dispatches/:dispatchId/payment", async (request, response, next) 
         paymentUrl: link.paymentUrl,
         servicePaymentId,
         amount: payment.totalAmount,
+        baseServiceAmount: payment.baseServiceAmount,
+        payoutTransferFee: payment.payoutTransferFee,
       });
       return;
     }
@@ -3247,12 +3985,22 @@ app.post("/api/dispatches/:dispatchId/payment", async (request, response, next) 
     const debit = await deductSoteriaCredits(motorist, payment.totalAmount, "service_payment", {
       dispatchId,
       commissionAmount: payment.commissionAmount,
+      baseServiceAmount: payment.baseServiceAmount,
+      payoutTransferFee: payment.payoutTransferFee,
       responderPayout: payment.serviceAmount,
     });
 
     await updateDocument(collections.dispatches, dispatchId, {
       dispatch_status: "completed",
       completed_at: serverTimestamp(),
+      total_amount: payment.totalAmount,
+      base_service_amount: payment.baseServiceAmount,
+      payout_transfer_fee: payment.payoutTransferFee,
+      service_amount: payment.serviceAmount,
+      commission_amount: payment.commissionAmount,
+      commission_rate: payment.commissionRate,
+      motorist_subscription_status: payment.subscriptionStatus,
+      motorist_subscription_plan: payment.subscriptionPlan,
       payment_status: "system_received",
       payment_method: "soteria_credits",
       payout_status: "processing",
@@ -3480,6 +4228,22 @@ app.post("/api/community/redemptions", async (request, response, next) => {
       return;
     }
 
+    const payoutTransferFee = getCommunityPayoutTransferFee();
+    const netPayoutAmount = Number(reward.cashValue) - payoutTransferFee;
+    if (!Number.isFinite(netPayoutAmount) || netPayoutAmount <= 0) {
+      response.status(400).json({
+        error: "This reward ticket is not available for automated payout because its cash value does not exceed the PHP 10 transaction fee.",
+      });
+      return;
+    }
+
+    const normalizedGcashName = normalizePersonName(gcashName);
+    const normalizedGcashNumber = normalizePayoutAccountNumber(gcashNumber);
+    if (!normalizedGcashName || !isValidGcashAccountNumber(normalizedGcashNumber)) {
+      response.status(400).json({ error: "GCash name and an active 11-digit GCash number starting with 09 are required." });
+      return;
+    }
+
     const redemptionId = await createDocument(collections.communityRedemptions, {
       user_id: user.id,
       user_name: user.full_name ?? user.username ?? "Community Member",
@@ -3489,9 +4253,17 @@ app.post("/api/community/redemptions", async (request, response, next) => {
       coins_required: reward.coinsRequired,
       coins_spent: currentBalance,
       cash_value: reward.cashValue,
-      gcash_name: String(gcashName).trim(),
-      gcash_number: String(gcashNumber).trim(),
+      payout_transfer_fee: payoutTransferFee,
+      net_payout_amount: netPayoutAmount,
+      gcash_name: normalizedGcashName,
+      gcash_number: normalizedGcashNumber,
+      provider: getPayoutProviderMode(),
+      provider_payout_id: null,
+      provider_status: null,
+      failure_reason: "",
       status: "pending",
+      processed_at: null,
+      paid_at: null,
       reviewed_at: null,
     });
 
@@ -3501,22 +4273,11 @@ app.post("/api/community/redemptions", async (request, response, next) => {
       community_last_coin_source: "reward_redemption",
     });
 
-    const redemption = await getDocument(collections.communityRedemptions, redemptionId);
+    const redemption = await processCommunityRedemptionPayout(
+      await getDocument(collections.communityRedemptions, redemptionId),
+    );
     response.status(201).json({
-      id: redemption.id,
-      userId: redemption.user_id,
-      userName: redemption.user_name,
-      userPhone: redemption.user_phone ?? "",
-      rewardId: redemption.reward_id,
-      rewardTitle: redemption.reward_title,
-      cashValue: Number(redemption.cash_value ?? 0),
-      coinsRequired: Number(redemption.coins_required ?? 0),
-      coinsSpent: Number(redemption.coins_spent ?? 0),
-      gcashName: redemption.gcash_name,
-      gcashNumber: redemption.gcash_number,
-      status: normalizeCommunityRedemptionStatus(redemption.status),
-      submittedAt: formatFirestoreDateTime(redemption.created_at),
-      reviewedAt: formatFirestoreDateTime(redemption.reviewed_at),
+      ...formatCommunityRedemption(redemption),
       profile: formatCommunityProfile(await getDocument(collections.users, user.id)),
     });
   } catch (error) {
@@ -3563,22 +4324,7 @@ app.patch("/api/community/redemptions/:redemptionId", async (request, response, 
     }
 
     const updatedRedemption = await getDocument(collections.communityRedemptions, redemptionId);
-    response.json({
-      id: updatedRedemption.id,
-      userId: updatedRedemption.user_id,
-      userName: updatedRedemption.user_name,
-      userPhone: updatedRedemption.user_phone ?? "",
-      rewardId: updatedRedemption.reward_id,
-      rewardTitle: updatedRedemption.reward_title,
-      cashValue: Number(updatedRedemption.cash_value ?? 0),
-      coinsRequired: Number(updatedRedemption.coins_required ?? 0),
-      coinsSpent: Number(updatedRedemption.coins_spent ?? 0),
-      gcashName: updatedRedemption.gcash_name,
-      gcashNumber: updatedRedemption.gcash_number,
-      status: normalizeCommunityRedemptionStatus(updatedRedemption.status),
-      submittedAt: formatFirestoreDateTime(updatedRedemption.created_at),
-      reviewedAt: formatFirestoreDateTime(updatedRedemption.reviewed_at),
-    });
+    response.json(formatCommunityRedemption(updatedRedemption));
   } catch (error) {
     next(error);
   }
@@ -3604,6 +4350,75 @@ app.get("/api/admin/earnings", async (_request, response, next) => {
 app.get("/api/admin/responder-payouts", async (_request, response, next) => {
   try {
     response.json(await listResponderPayouts());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/responder-payouts/:payoutId/retry", async (request, response, next) => {
+  try {
+    const { payoutId } = request.params;
+    const payout = await retryResponderPayout(payoutId);
+    if (!payout) {
+      response.status(404).json({ error: "Responder payout not found." });
+      return;
+    }
+
+    response.json({
+      payout: (await listResponderPayouts()).find((item) => item.id === payout.id) ?? payout,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/responder-payouts/:payoutId/sync", async (request, response, next) => {
+  try {
+    const { payoutId } = request.params;
+    const payout = await getDocument("responder_payouts", payoutId);
+    if (!payout) {
+      response.status(404).json({ error: "Responder payout not found." });
+      return;
+    }
+
+    const syncedPayout = await syncPayMongoResponderPayoutStatus(payout);
+    await updateDispatchPayoutFromResponderPayout(payout.dispatch_id, syncedPayout);
+    response.json({
+      payout: (await listResponderPayouts()).find((item) => item.id === payout.id) ?? syncedPayout,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/responder-payouts/retry-failed", async (_request, response, next) => {
+  try {
+    const payouts = await getDocuments("responder_payouts");
+    const retryablePayouts = payouts.filter((payout) =>
+      ["failed", "details_required", "awaiting_wallet_funding"].includes(String(payout.status ?? "")),
+    );
+    const results = [];
+
+    for (const payout of retryablePayouts) {
+      results.push(await retryResponderPayout(payout.id));
+    }
+
+    response.json({
+      retried: results.length,
+      payouts: await listResponderPayouts(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/responder-payouts/process-due", async (_request, response, next) => {
+  try {
+    const results = await processDueResponderPayouts();
+    response.json({
+      processed: results.length,
+      payouts: await listResponderPayouts(),
+    });
   } catch (error) {
     next(error);
   }
@@ -3723,6 +4538,67 @@ app.post("/api/payments/webhooks/paymongo", async (request, response, next) => {
     });
 
     response.status(200).json({ received: true, result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/payments/webhooks/paymongo-wallet", async (request, response, next) => {
+  try {
+    const payload = request.body ?? {};
+    const transfer = payload?.data ?? payload;
+    const { id: providerPayoutId, attributes } = getPayMongoTransferData(transfer);
+
+    if (!providerPayoutId) {
+      response.status(400).json({ error: "Wallet transaction id is required." });
+      return;
+    }
+
+    const payouts = await getDocuments("responder_payouts", { provider_payout_id: providerPayoutId });
+    const payout = payouts[0] ?? null;
+    if (!payout) {
+      const redemptions = await getDocuments(collections.communityRedemptions, { provider_payout_id: providerPayoutId });
+      const redemption = redemptions[0] ?? null;
+      if (!redemption) {
+        response.status(200).json({ received: true, matched: false });
+        return;
+      }
+
+      const providerStatus = attributes.status ?? redemption.provider_status ?? "processing";
+      const paid = isPayMongoPayoutPaidStatus(providerStatus);
+      const failed = isPayMongoPayoutFailedStatus(providerStatus);
+      const destinationFailureReason = failed ? getPayMongoDestinationAccountFailureReason(attributes) : "";
+      await updateDocument(collections.communityRedemptions, redemption.id, {
+        status: paid ? "paid" : failed && destinationFailureReason ? "details_required" : failed ? "failed" : "processing",
+        provider_status: providerStatus,
+        provider_payload: transfer,
+        paid_at: paid ? serverTimestamp() : null,
+        reviewed_at: paid ? serverTimestamp() : null,
+        failure_reason: failed ? destinationFailureReason || getPayMongoProviderFailureReason(attributes) : "",
+      });
+
+      response.status(200).json({ received: true, matched: true, payoutType: "community" });
+      return;
+    }
+
+    const providerStatus = attributes.status ?? payout.provider_status ?? "processing";
+    const paid = isPayMongoPayoutPaidStatus(providerStatus);
+    const failed = isPayMongoPayoutFailedStatus(providerStatus);
+    const destinationFailureReason = failed ? getPayMongoDestinationAccountFailureReason(attributes) : "";
+    await updateDocument("responder_payouts", payout.id, {
+      status: paid ? "paid" : failed && destinationFailureReason ? "details_required" : failed ? "failed" : "processing",
+      provider_status: providerStatus,
+      provider_payload: transfer,
+      paid_at: paid ? serverTimestamp() : null,
+      failure_reason: failed ? destinationFailureReason || getPayMongoProviderFailureReason(attributes) : "",
+      rejected_destination_key: failed && destinationFailureReason
+        ? getPayoutDestinationKey(payout.destination_name, payout.destination_account)
+        : null,
+    });
+
+    const updatedPayout = await getDocument("responder_payouts", payout.id);
+    await updateDispatchPayoutFromResponderPayout(payout.dispatch_id, updatedPayout);
+    response.status(200).json({ received: true, matched: true, payoutType: "responder" });
   } catch (error) {
     next(error);
   }
@@ -3998,6 +4874,30 @@ app.post("/api/forum/threads", async (request, response, next) => {
   }
 });
 
+app.delete("/api/forum/threads/:threadId", async (request, response, next) => {
+  try {
+    const { threadId } = request.params;
+    const { adminUserId } = request.body ?? {};
+
+    await requireForumAdmin(adminUserId);
+
+    const thread = await getDocument(collections.forumThreads, threadId);
+    if (!thread) {
+      response.status(404).json({ error: "Forum thread not found." });
+      return;
+    }
+
+    await deleteDocumentsByConditions(collections.forumReplies, {
+      thread_id: threadId,
+    });
+    await deleteDocument(collections.forumThreads, threadId);
+
+    response.json({ id: threadId, deleted: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post("/api/forum/threads/:threadId/replies", async (request, response, next) => {
   try {
     const { threadId } = request.params;
@@ -4045,6 +4945,43 @@ app.post("/api/forum/threads/:threadId/replies", async (request, response, next)
     const replies = await listForumReplies(threadId);
     const savedReply = replies.find((reply) => reply.id === replyId) ?? null;
     response.status(201).json(savedReply);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/forum/threads/:threadId/replies/:replyId", async (request, response, next) => {
+  try {
+    const { threadId, replyId } = request.params;
+    const { adminUserId } = request.body ?? {};
+
+    await requireForumAdmin(adminUserId);
+
+    const thread = await getDocument(collections.forumThreads, threadId);
+    if (!thread) {
+      response.status(404).json({ error: "Forum thread not found." });
+      return;
+    }
+
+    const reply = await getDocument(collections.forumReplies, replyId);
+    if (!reply || reply.thread_id !== threadId) {
+      response.status(404).json({ error: "Forum comment not found." });
+      return;
+    }
+
+    await deleteDocument(collections.forumReplies, replyId);
+
+    const remainingReplies = await listForumReplies(threadId);
+    await updateDocument(collections.forumThreads, threadId, {
+      last_activity_at: serverTimestamp(),
+    });
+
+    response.json({
+      id: replyId,
+      threadId,
+      deleted: true,
+      replyCount: remainingReplies.length,
+    });
   } catch (error) {
     next(error);
   }
@@ -4342,7 +5279,7 @@ app.get("/api/admin/agent-balance-proofs", async (_request, response, next) => {
               businessName: profile.business_name ?? "",
               organizationName: profile.organization_name ?? "",
               phone: user?.phone ?? "",
-              gcashName: profile.payout_gcash_name ?? "",
+              gcashName: resolvePayoutAccountName(profile.payout_gcash_name, user?.full_name),
               gcashNumber: profile.payout_gcash_number ?? "",
               payoutNotes: profile.payout_notes ?? "",
               proofUrl: profile.balance_proof_asset?.url ?? "",
@@ -4408,7 +5345,7 @@ app.patch("/api/admin/agent-balance-proofs/:agentId", async (request, response, 
       businessName: updatedProfile?.business_name ?? "",
       organizationName: updatedProfile?.organization_name ?? "",
       phone: user.phone ?? "",
-      gcashName: updatedProfile?.payout_gcash_name ?? "",
+      gcashName: resolvePayoutAccountName(updatedProfile?.payout_gcash_name, user.full_name),
       gcashNumber: updatedProfile?.payout_gcash_number ?? "",
       payoutNotes: updatedProfile?.payout_notes ?? "",
       proofUrl: updatedProfile?.balance_proof_asset?.url ?? "",
@@ -4612,7 +5549,7 @@ app.get("/api/agents/:agentId/profile", async (request, response, next) => {
       businessName: profile.business_name ?? "",
       organizationName: profile.organization_name ?? "",
       serviceArea: profile.service_area ?? "",
-      gcashName: profile.payout_gcash_name ?? "",
+      gcashName: resolvePayoutAccountName(profile.payout_gcash_name, user.full_name),
       gcashNumber: profile.payout_gcash_number ?? "",
       payoutNotes: profile.payout_notes ?? "",
       liabilityAcknowledged: Boolean(profile.liability_acknowledged),
@@ -4640,14 +5577,22 @@ app.put("/api/agents/:agentId/profile/payment", async (request, response, next) 
       return;
     }
 
+    const normalizedGcashNumber = normalizePayoutAccountNumber(gcashNumber);
+    if (!isValidGcashAccountNumber(normalizedGcashNumber)) {
+      response.status(400).json({ error: "GCash number must be an active 11-digit Philippine mobile number starting with 09." });
+      return;
+    }
+    const normalizedGcashName = resolvePayoutAccountName(gcashName, user.full_name);
+
     await updateAgentProfileByUserId(agentId, {
-      payout_gcash_name: String(gcashName).trim(),
-      payout_gcash_number: String(gcashNumber).trim(),
+      payout_gcash_name: normalizedGcashName,
+      payout_gcash_number: normalizedGcashNumber,
       payout_notes: String(payoutNotes ?? "").trim(),
       updated_at: serverTimestamp(),
     });
 
     const updatedProfile = await getAgentProfileByUserId(agentId);
+    const retriedPayouts = await retryResponderPayoutsForResponder(agentId);
     response.json({
       userId: agentId,
       fullName: user.full_name ?? "",
@@ -4655,11 +5600,12 @@ app.put("/api/agents/:agentId/profile/payment", async (request, response, next) 
       businessName: updatedProfile?.business_name ?? "",
       organizationName: updatedProfile?.organization_name ?? "",
       serviceArea: updatedProfile?.service_area ?? "",
-      gcashName: updatedProfile?.payout_gcash_name ?? "",
+      gcashName: normalizedGcashName,
       gcashNumber: updatedProfile?.payout_gcash_number ?? "",
       payoutNotes: updatedProfile?.payout_notes ?? "",
       liabilityAcknowledged: Boolean(updatedProfile?.liability_acknowledged),
       balanceProof: getAgentBalanceProofStatus(updatedProfile),
+      retriedResponderPayouts: retriedPayouts.length,
     });
   } catch (error) {
     next(error);
@@ -4704,7 +5650,7 @@ app.put("/api/agents/:agentId/cash-assist", async (request, response, next) => {
       businessName: updatedProfile?.business_name ?? "",
       organizationName: updatedProfile?.organization_name ?? "",
       serviceArea: updatedProfile?.service_area ?? "",
-      gcashName: updatedProfile?.payout_gcash_name ?? "",
+      gcashName: resolvePayoutAccountName(updatedProfile?.payout_gcash_name, user.full_name),
       gcashNumber: updatedProfile?.payout_gcash_number ?? "",
       payoutNotes: updatedProfile?.payout_notes ?? "",
       liabilityAcknowledged: Boolean(updatedProfile?.liability_acknowledged),
@@ -4753,7 +5699,7 @@ app.post("/api/agents/:agentId/balance-proof", async (request, response, next) =
       businessName: updatedProfile?.business_name ?? "",
       organizationName: updatedProfile?.organization_name ?? "",
       serviceArea: updatedProfile?.service_area ?? "",
-      gcashName: updatedProfile?.payout_gcash_name ?? "",
+      gcashName: resolvePayoutAccountName(updatedProfile?.payout_gcash_name, user.full_name),
       gcashNumber: updatedProfile?.payout_gcash_number ?? "",
       payoutNotes: updatedProfile?.payout_notes ?? "",
       liabilityAcknowledged: Boolean(updatedProfile?.liability_acknowledged),
@@ -5159,5 +6105,30 @@ app.use((error, _request, response, _next) => {
 app.listen(port, () => {
   console.log(`🚀 Firebase Soteria API server running on port ${port}`);
 });
+
+if (getPayoutProviderMode() === "paymongo") {
+  const retryIntervalMs = Math.max(
+    60_000,
+    Number(process.env.RESPONDER_PAYOUT_WORKER_INTERVAL_MS ?? 5 * 60_000),
+  );
+
+  setInterval(() => {
+    Promise.all([
+      processDueResponderPayouts(),
+      processDueCommunityRedemptionPayouts(),
+    ])
+      .then(([responderResults, communityResults]) => {
+        if (responderResults.length > 0) {
+          console.log(`Processed ${responderResults.length} due responder payout(s).`);
+        }
+        if (communityResults.length > 0) {
+          console.log(`Processed ${communityResults.length} due community payout(s).`);
+        }
+      })
+      .catch((error) => {
+        console.error("Payout worker failed:", error);
+      });
+  }, retryIntervalMs);
+}
 
 export default app;

@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   ArrowLeft,
+  Loader2,
   MessageSquare,
   Send,
+  Trash2,
   TriangleAlert,
   UserRound,
   Wrench,
@@ -12,6 +14,8 @@ import {
   awardCommunityForumVisit,
   createForumReply,
   createForumThread,
+  deleteForumReply,
+  deleteForumThread,
   fetchCommunityProfile,
   fetchForumThreads,
   getAdminSession,
@@ -55,6 +59,7 @@ export function CommunityForum() {
   const [submitting, setSubmitting] = useState(false);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [replyingThreadId, setReplyingThreadId] = useState<string | null>(null);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
   const session = useMemo(() => getStoredUserSession(), []);
   const adminSession = useMemo(() => getAdminSession(), []);
   const isAdminMonitor = location.pathname.startsWith("/admin") && adminSession?.role === "admin";
@@ -179,6 +184,62 @@ export function CommunityForum() {
       setErrorMessage(error instanceof Error ? error.message : "Failed to publish your post.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteThread = async (threadId: string) => {
+    if (!adminSession?.id || !isAdminMonitor || deletingItemId) {
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this forum post and all of its replies?");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingItemId(`thread:${threadId}`);
+    setErrorMessage("");
+
+    try {
+      await deleteForumThread(threadId, adminSession.id);
+      setThreads((current) => current.filter((thread) => thread.id !== threadId));
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to delete forum post.");
+    } finally {
+      setDeletingItemId(null);
+    }
+  };
+
+  const handleDeleteReply = async (threadId: string, replyId: string) => {
+    if (!adminSession?.id || !isAdminMonitor || deletingItemId) {
+      return;
+    }
+
+    const confirmed = window.confirm("Delete this forum comment?");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingItemId(`reply:${replyId}`);
+    setErrorMessage("");
+
+    try {
+      await deleteForumReply(threadId, replyId, adminSession.id);
+      setThreads((current) =>
+        current.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                replies: thread.replies.filter((reply) => reply.id !== replyId),
+                replyCount: Math.max(0, thread.replyCount - 1),
+              }
+            : thread,
+        ),
+      );
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Failed to delete forum comment.");
+    } finally {
+      setDeletingItemId(null);
     }
   };
 
@@ -417,13 +478,37 @@ export function CommunityForum() {
                   <div className="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-300">
                     {thread.replyCount} replies
                   </div>
+                  {isAdminMonitor ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteThread(thread.id)}
+                      disabled={Boolean(deletingItemId)}
+                      className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200 transition-colors hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {deletingItemId === `thread:${thread.id}` ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                      Delete Post
+                    </button>
+                  ) : null}
                 </div>
 
                 <p className="mt-4 whitespace-pre-wrap text-sm leading-7 text-gray-200">{thread.body}</p>
 
                 <div className="mt-5 space-y-3 border-t border-gray-700 pt-4">
                   {thread.replies.length > 0 ? (
-                    thread.replies.map((reply) => <ReplyCard key={reply.id} reply={reply} />)
+                    thread.replies.map((reply) => (
+                      <ReplyCard
+                        key={reply.id}
+                        reply={reply}
+                        canDelete={isAdminMonitor}
+                        deleting={deletingItemId === `reply:${reply.id}`}
+                        disabled={Boolean(deletingItemId)}
+                        onDelete={() => void handleDeleteReply(thread.id, reply.id)}
+                      />
+                    ))
                   ) : (
                     <div className="rounded-xl border border-dashed border-gray-700 bg-gray-900/40 px-4 py-4 text-sm text-gray-400">
                       No replies yet. Be the first to respond.
@@ -483,13 +568,38 @@ function RoleBadge({ role }: { role: ForumRole }) {
   );
 }
 
-function ReplyCard({ reply }: { reply: ForumReply }) {
+function ReplyCard({
+  reply,
+  canDelete = false,
+  deleting = false,
+  disabled = false,
+  onDelete,
+}: {
+  reply: ForumReply;
+  canDelete?: boolean;
+  deleting?: boolean;
+  disabled?: boolean;
+  onDelete?: () => void;
+}) {
   return (
     <div className="rounded-xl border border-gray-700 bg-gray-900/70 p-4">
-      <div className="flex items-center gap-2">
-        <RoleBadge role={reply.authorRole} />
-        <span className="text-sm font-medium text-white">{reply.authorName}</span>
-        <span className="text-xs text-gray-500">{reply.createdAt ?? "Unknown date"}</span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <RoleBadge role={reply.authorRole} />
+          <span className="text-sm font-medium text-white">{reply.authorName}</span>
+          <span className="text-xs text-gray-500">{reply.createdAt ?? "Unknown date"}</span>
+        </div>
+        {canDelete ? (
+          <button
+            type="button"
+            onClick={onDelete}
+            disabled={disabled}
+            className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-200 transition-colors hover:border-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {deleting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+            Delete Comment
+          </button>
+        ) : null}
       </div>
       <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-gray-200">{reply.body}</p>
     </div>

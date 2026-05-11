@@ -156,12 +156,16 @@ async function seedFirebaseData() {
       await db.collection(collections.agentProfiles).doc(agentId.id).set({
         user_id: agentId.id,
         business_name: 'Test Auto Repair',
-        service_type: 'mechanic',
+        service_type: 'mechanical',
+        service_types: ['mechanical', 'towing'],
         service_area: 'San Pablo City, Laguna',
         verification_status: 'approved',
         is_available: true,
         current_latitude: 14.0680000,
         current_longitude: 121.4180000,
+        payout_gcash_name: 'Joshua Emmanuel Lontok',
+        payout_gcash_number: '09924702696',
+        payout_notes: '',
         created_at: serverTimestamp()
       });
 

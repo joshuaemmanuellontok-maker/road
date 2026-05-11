@@ -81,11 +81,14 @@ export type DispatchDetails = {
   arrivedAt: string | null;
   completedAt: string | null;
   payment: {
+    baseServiceAmount?: number;
+    payoutTransferFee?: number;
     serviceAmount: number;
     totalAmount: number;
     commissionAmount: number;
     commissionRate: number;
     subscriptionStatus: SubscriptionStatus;
+    subscriptionPlan?: SubscriptionPlan | null;
     paymentStatus?: string;
     payoutStatus?: string;
     payoutTransferredAt?: string | null;
@@ -159,11 +162,14 @@ export type DispatchHistoryEntry = {
   issueSummary: string;
   serviceLabel: string;
   payment: {
+    baseServiceAmount?: number;
+    payoutTransferFee?: number;
     serviceAmount: number;
     totalAmount: number;
     commissionAmount: number;
     commissionRate: number;
     subscriptionStatus: SubscriptionStatus;
+    subscriptionPlan?: SubscriptionPlan | null;
     paymentStatus?: string;
     payoutStatus?: string;
     payoutTransferredAt?: string | null;
@@ -476,12 +482,20 @@ export async function fetchDispatchDetails(dispatchId: string): Promise<Dispatch
         ? String(payload?.completedAt ?? payload?.completed_at)
         : null,
     payment: payload?.payment
-      ? {
+        ? {
+          baseServiceAmount: Number(payload.payment.baseServiceAmount ?? payload.payment.base_service_amount ?? payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
+          payoutTransferFee: Number(payload.payment.payoutTransferFee ?? payload.payment.payout_transfer_fee ?? 0),
           serviceAmount: Number(payload.payment.serviceAmount ?? payload.payment.service_amount ?? 0),
           totalAmount: Number(payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
           commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
           commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
           subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          subscriptionPlan:
+            payload.payment.subscriptionPlan === "monthly" ||
+            payload.payment.subscriptionPlan === "six_months" ||
+            payload.payment.subscriptionPlan === "annual"
+              ? payload.payment.subscriptionPlan
+              : null,
           paymentStatus: String(payload.payment.paymentStatus ?? payload.payment.payment_status ?? "system_received"),
           payoutStatus: String(payload.payment.payoutStatus ?? payload.payment.payout_status ?? "auto_transferred"),
           payoutTransferredAt:
@@ -1028,9 +1042,20 @@ export function createServiceOnlinePayment(dispatchId: string, totalAmount: numb
     paymentMethod?: string;
     servicePaymentId?: string;
     amount?: number;
+    baseServiceAmount?: number;
+    payoutTransferFee?: number;
   }>(`/dispatches/${dispatchId}/payment`, {
     method: "POST",
     body: JSON.stringify({ paymentMethod: "online_payment" }),
+  });
+}
+
+export function syncServiceOnlinePayment(dispatchId: string) {
+  return apiRequest<{
+    syncResult?: unknown;
+    dispatch?: DispatchDetails | null;
+  }>(`/dispatches/${dispatchId}/payment/sync`, {
+    method: "POST",
   });
 }
 
@@ -1100,11 +1125,19 @@ function mapDispatchHistoryEntry(payload: any): DispatchHistoryEntry {
     serviceLabel: String(payload?.serviceLabel ?? payload?.service_label ?? ""),
     payment: payload?.payment
       ? {
+          baseServiceAmount: Number(payload.payment.baseServiceAmount ?? payload.payment.base_service_amount ?? payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
+          payoutTransferFee: Number(payload.payment.payoutTransferFee ?? payload.payment.payout_transfer_fee ?? 0),
           serviceAmount: Number(payload.payment.serviceAmount ?? payload.payment.service_amount ?? 0),
           totalAmount: Number(payload.payment.totalAmount ?? payload.payment.total_amount ?? 0),
           commissionAmount: Number(payload.payment.commissionAmount ?? payload.payment.commission_amount ?? 0),
           commissionRate: Number(payload.payment.commissionRate ?? payload.payment.commission_rate ?? 0),
           subscriptionStatus: payload.payment.subscriptionStatus === "active" ? "active" : "inactive",
+          subscriptionPlan:
+            payload.payment.subscriptionPlan === "monthly" ||
+            payload.payment.subscriptionPlan === "six_months" ||
+            payload.payment.subscriptionPlan === "annual"
+              ? payload.payment.subscriptionPlan
+              : null,
           paymentStatus: String(payload.payment.paymentStatus ?? payload.payment.payment_status ?? "system_received"),
           payoutStatus: String(payload.payment.payoutStatus ?? payload.payment.payout_status ?? "auto_transferred"),
           payoutTransferredAt:
@@ -1150,11 +1183,19 @@ function mapDispatchHistoryEntry(payload: any): DispatchHistoryEntry {
               : null,
           payment: payload.dispatch.payment
             ? {
+                baseServiceAmount: Number(payload.dispatch.payment.baseServiceAmount ?? payload.dispatch.payment.base_service_amount ?? payload.dispatch.payment.totalAmount ?? payload.dispatch.payment.total_amount ?? 0),
+                payoutTransferFee: Number(payload.dispatch.payment.payoutTransferFee ?? payload.dispatch.payment.payout_transfer_fee ?? 0),
                 serviceAmount: Number(payload.dispatch.payment.serviceAmount ?? payload.dispatch.payment.service_amount ?? 0),
                 totalAmount: Number(payload.dispatch.payment.totalAmount ?? payload.dispatch.payment.total_amount ?? 0),
                 commissionAmount: Number(payload.dispatch.payment.commissionAmount ?? payload.dispatch.payment.commission_amount ?? 0),
                 commissionRate: Number(payload.dispatch.payment.commissionRate ?? payload.dispatch.payment.commission_rate ?? 0),
                 subscriptionStatus: payload.dispatch.payment.subscriptionStatus === "active" ? "active" : "inactive",
+                subscriptionPlan:
+                  payload.dispatch.payment.subscriptionPlan === "monthly" ||
+                  payload.dispatch.payment.subscriptionPlan === "six_months" ||
+                  payload.dispatch.payment.subscriptionPlan === "annual"
+                    ? payload.dispatch.payment.subscriptionPlan
+                    : null,
                 paymentStatus: String(payload.dispatch.payment.paymentStatus ?? payload.dispatch.payment.payment_status ?? "system_received"),
                 payoutStatus: String(payload.dispatch.payment.payoutStatus ?? payload.dispatch.payment.payout_status ?? "auto_transferred"),
                 payoutTransferredAt:

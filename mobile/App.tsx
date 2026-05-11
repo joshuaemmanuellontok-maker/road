@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Animated,
+  Easing,
   ImageBackground,
   Linking,
   Pressable,
@@ -352,6 +354,16 @@ function formatCurrencyAmount(value: number): string {
   })}`;
 }
 
+function formatPayoutStatus(status?: string | null): string {
+  if (status === "auto_transferred") return "Sent to GCash";
+  if (status === "awaiting_wallet_funding") return "Waiting for PayMongo wallet funds";
+  if (status === "payout_details_required") return "GCash details required";
+  if (status === "processing") return "GCash transfer processing";
+  if (status === "failed") return "GCash transfer failed";
+  if (status === "pending") return "Waiting for payment";
+  return status ? status.replace(/_/g, " ") : "Processing";
+}
+
 function mapDbShop(shop: DbRepairShop): Shop {
   return {
     id: shop.id,
@@ -411,6 +423,10 @@ function formatForumTimestamp(value: string | null): string {
 }
 
 export default function App() {
+  const [showOpeningSplash, setShowOpeningSplash] = useState(true);
+  const splashProgress = useRef(new Animated.Value(0)).current;
+  const splashFloat = useRef(new Animated.Value(0)).current;
+  const splashSpin = useRef(new Animated.Value(0)).current;
   const [shopData, setShopData] = useState<Shop[]>(shops);
   const [backendMessage, setBackendMessage] = useState("Using demo-ready mobile data until backend records load.");
   const [agentSearchError, setAgentSearchError] = useState("");
@@ -527,6 +543,7 @@ export default function App() {
   const [agentGcashNumber, setAgentGcashNumber] = useState("");
   const [agentPayoutNotes, setAgentPayoutNotes] = useState("");
   const [agentPaymentSaving, setAgentPaymentSaving] = useState(false);
+  const agentPaymentDraftDirtyRef = useRef(false);
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     motoristSubscription: true,
     motoristHistory: false,
@@ -602,6 +619,52 @@ export default function App() {
   }, [activeAgentRequest, navigationDistance]);
 
   useEffect(() => {
+    const floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(splashFloat, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(splashFloat, {
+          toValue: 0,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    const spinLoop = Animated.loop(
+      Animated.timing(splashSpin, {
+        toValue: 1,
+        duration: 3200,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+
+    floatLoop.start();
+    spinLoop.start();
+
+    Animated.timing(splashProgress, {
+      toValue: 1,
+      duration: 2400,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+
+    const timer = setTimeout(() => setShowOpeningSplash(false), 2800);
+
+    return () => {
+      clearTimeout(timer);
+      floatLoop.stop();
+      spinLoop.stop();
+    };
+  }, [splashFloat, splashProgress, splashSpin]);
+
+  useEffect(() => {
     if (!agentId || activeDispatchId || screen !== "agent-app") return;
     const active = agentDispatches.find((dispatch) =>
       ["accepted", "arrived", "in_progress"].includes(dispatch.dispatchStatus),
@@ -612,6 +675,10 @@ export default function App() {
     setAgentTab("navigation");
     setNavStatus(active.dispatchStatus === "arrived" ? "arrived" : "en-route");
   }, [agentId, activeDispatchId, agentDispatches, screen]);
+
+  useEffect(() => {
+    agentPaymentDraftDirtyRef.current = false;
+  }, [agentId]);
 
   useEffect(() => {
     let active = true;
@@ -686,9 +753,11 @@ export default function App() {
         const profile = await fetchAgentPaymentProfile(agentId);
         if (active) {
           setAgentPaymentProfile(profile);
-          setAgentGcashName(profile.gcashName);
-          setAgentGcashNumber(profile.gcashNumber);
-          setAgentPayoutNotes(profile.payoutNotes);
+          if (!agentPaymentDraftDirtyRef.current) {
+            setAgentGcashName(profile.gcashName);
+            setAgentGcashNumber(profile.gcashNumber);
+            setAgentPayoutNotes(profile.payoutNotes);
+          }
         }
       } catch (error) {
         console.warn("Failed to load responder payment profile:", error);
@@ -1135,6 +1204,7 @@ export default function App() {
         gcashNumber: agentGcashNumber.trim(),
         payoutNotes: agentPayoutNotes.trim(),
       });
+      agentPaymentDraftDirtyRef.current = false;
       setAgentPaymentProfile(profile);
       setAgentGcashName(profile.gcashName);
       setAgentGcashNumber(profile.gcashNumber);
@@ -1148,6 +1218,21 @@ export default function App() {
     } finally {
       setAgentPaymentSaving(false);
     }
+  };
+
+  const updateAgentGcashNameDraft = (value: string) => {
+    agentPaymentDraftDirtyRef.current = true;
+    setAgentGcashName(value);
+  };
+
+  const updateAgentGcashNumberDraft = (value: string) => {
+    agentPaymentDraftDirtyRef.current = true;
+    setAgentGcashNumber(value);
+  };
+
+  const updateAgentPayoutNotesDraft = (value: string) => {
+    agentPaymentDraftDirtyRef.current = true;
+    setAgentPayoutNotes(value);
   };
 
   const registerUser = () => {
@@ -1903,6 +1988,54 @@ export default function App() {
     })();
   };
 
+  const splashTranslateY = splashFloat.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -12],
+  });
+  const splashRotation = splashSpin.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "360deg"],
+  });
+
+  if (showOpeningSplash) {
+    return (
+      <SafeAreaView style={styles.splashSafe}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.splashStage}>
+          <Animated.View style={[styles.splashOrbit, { transform: [{ rotate: splashRotation }] }]} />
+          <Animated.View
+            style={[
+              styles.splashOrbitInner,
+              { transform: [{ rotate: splashRotation }, { scale: 0.72 }] },
+            ]}
+          />
+          <Animated.View style={[styles.splashBrand, { transform: [{ translateY: splashTranslateY }] }]}>
+            <View style={styles.splashLogoFrame}>
+              <View style={styles.splashLogoCore}>
+                <View style={styles.splashWrench}>
+                  <View style={styles.splashWrenchJaw} />
+                  <View style={styles.splashWrenchHandle} />
+                  <View style={styles.splashWrenchEnd} />
+                </View>
+              </View>
+            </View>
+            <Text style={styles.splashKicker}>Enterprise roadside command</Text>
+            <Text style={styles.splashTitle}>Soteria</Text>
+            <Text style={styles.splashSubtitle}>Safety, response, and service intelligence coming online.</Text>
+            <View style={styles.splashProgressTrack}>
+              <Animated.View
+                style={[
+                  styles.splashProgressFill,
+                  { transform: [{ scaleX: splashProgress }] },
+                ]}
+              />
+            </View>
+          </Animated.View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (screen === "user-app" && userTab === "tracking" && liveDispatchId) {
     return (
       <SafeAreaView style={styles.safe}>
@@ -2445,6 +2578,7 @@ export default function App() {
                   <View style={styles.flex}>
                     <Text style={styles.label}>Soteria Credits balance</Text>
                     <Text style={styles.valueBig}>{formatCurrencyAmount(soteriaCreditBalance)}</Text>
+                    <Text style={styles.text}>1 PHP = 1 credit.</Text>
                     <Text style={styles.text}>Credits can be used for subscription plans and roadside service payments.</Text>
                   </View>
                   <Pill label="In-app currency" active />
@@ -2507,13 +2641,11 @@ export default function App() {
                         style={[styles.subscriptionPlanCard, selectedSubscriptionOffer === offer.value && styles.subscriptionPlanCardActive]}
                         onPress={() => setSelectedSubscriptionOffer(offer.value)}
                       >
-                        <View style={styles.between}>
-                          <View style={styles.flex}>
-                            <View style={styles.subscriptionTitleRow}>
-                              <Text style={styles.subscriptionPlanTitle}>{offer.label}</Text>
-                              <View style={styles.subscriptionPlanBadge}>
-                                <Text style={styles.subscriptionPlanBadgeText}>{offer.badge}</Text>
-                              </View>
+                        <View style={styles.subscriptionPlanHeader}>
+                          <View style={styles.subscriptionPlanIdentity}>
+                            <Text style={styles.subscriptionPlanTitle}>{offer.label}</Text>
+                            <View style={styles.subscriptionPlanBadge}>
+                              <Text style={styles.subscriptionPlanBadgeText}>{offer.badge}</Text>
                             </View>
                             <Text style={styles.subscriptionPlanTagline}>{offer.tagline}</Text>
                           </View>
@@ -2543,7 +2675,7 @@ export default function App() {
                       </Pressable>
                     ))}
                   </View>
-                  <View style={styles.flex}>
+                  <View style={[styles.flex, styles.subscriptionPaymentPanel]}>
                     <Text style={styles.label}>
                       {selectedSubscriptionOfferDetails.label} plan
                     </Text>
@@ -2551,7 +2683,7 @@ export default function App() {
                     <Text style={styles.text}>
                       Pay using Soteria Credits or direct online payment. Both methods activate automatically after confirmation.
                     </Text>
-                    <Text style={styles.label}>Payment method</Text>
+                    <Text style={[styles.label, styles.subscriptionPaymentLabel]}>Payment method</Text>
                     <View style={styles.rowWrap}>
                       <Chip
                         label="Use Credits"
@@ -3146,6 +3278,7 @@ export default function App() {
                       <Text style={styles.listTitle}>{item.serviceLabel}</Text>
                       <Text style={styles.text}>{item.counterpartName}</Text>
                       <Text style={styles.text}>Earned: {formatCurrencyAmount(item.payment?.serviceAmount ?? 0)}</Text>
+                      <Text style={styles.text}>GCash transfer: {formatPayoutStatus(item.payment?.payoutStatus)}</Text>
                       <Text style={styles.text}>
                         Your feedback: {item.viewerFeedback?.overallRating ?? 0}/5
                         {item.counterpartFeedback ? ` | Motorist feedback: ${item.counterpartFeedback.overallRating}/5` : ""}
@@ -3188,7 +3321,7 @@ export default function App() {
                   <Text style={styles.label}>GCash account name</Text>
                   <TextInput
                     value={agentGcashName}
-                    onChangeText={setAgentGcashName}
+                    onChangeText={updateAgentGcashNameDraft}
                     placeholder="Enter GCash account name"
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
@@ -3196,7 +3329,7 @@ export default function App() {
                   <Text style={styles.label}>GCash number</Text>
                   <TextInput
                     value={agentGcashNumber}
-                    onChangeText={setAgentGcashNumber}
+                    onChangeText={updateAgentGcashNumberDraft}
                     placeholder="09xxxxxxxxx"
                     placeholderTextColor="#94a3b8"
                     keyboardType="phone-pad"
@@ -3205,7 +3338,7 @@ export default function App() {
                   <Text style={styles.label}>Payout notes</Text>
                   <TextInput
                     value={agentPayoutNotes}
-                    onChangeText={setAgentPayoutNotes}
+                    onChangeText={updateAgentPayoutNotesDraft}
                     placeholder="Optional payout routing notes"
                     placeholderTextColor="#94a3b8"
                     multiline
@@ -3680,6 +3813,22 @@ function clock(value: number) {
 }
 
 const styles = StyleSheet.create({
+  splashSafe: { flex: 1, backgroundColor: "#050b14" },
+  splashStage: { flex: 1, alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: "#050b14" },
+  splashOrbit: { position: "absolute", width: 360, height: 360, borderRadius: 180, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(251,191,36,0.2)" },
+  splashOrbitInner: { position: "absolute", width: 360, height: 360, borderRadius: 180, borderWidth: 1, borderStyle: "dashed", borderColor: "rgba(125,211,252,0.14)" },
+  splashBrand: { width: "100%", maxWidth: 360, alignItems: "center", paddingHorizontal: 28 },
+  splashLogoFrame: { width: 118, height: 118, borderRadius: 34, padding: 2, backgroundColor: "#f59e0b", shadowColor: "#f59e0b", shadowOpacity: 0.36, shadowRadius: 30, shadowOffset: { width: 0, height: 18 }, elevation: 12 },
+  splashLogoCore: { flex: 1, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: "#07111f", borderWidth: 1, borderColor: "rgba(255,255,255,0.12)" },
+  splashWrench: { width: 72, height: 72, alignItems: "center", justifyContent: "center", transform: [{ rotate: "-38deg" }] },
+  splashWrenchJaw: { position: "absolute", top: 1, width: 34, height: 34, borderRadius: 17, borderWidth: 8, borderColor: "#ffd08a", borderRightColor: "transparent", borderBottomColor: "transparent", transform: [{ rotate: "-18deg" }] },
+  splashWrenchHandle: { position: "absolute", top: 29, width: 15, height: 45, borderRadius: 999, backgroundColor: "#ffd08a" },
+  splashWrenchEnd: { position: "absolute", bottom: -1, width: 30, height: 20, borderRadius: 999, backgroundColor: "#ffd08a" },
+  splashKicker: { marginTop: 28, color: "#fbbf24", fontSize: 11, fontWeight: "900", textTransform: "uppercase", letterSpacing: 2.6, textAlign: "center" },
+  splashTitle: { marginTop: 8, color: "#f8fafc", fontSize: 48, lineHeight: 56, fontWeight: "900", letterSpacing: 1.4, textAlign: "center" },
+  splashSubtitle: { marginTop: 8, color: "#cbd5e1", fontSize: 14, lineHeight: 22, textAlign: "center", maxWidth: 300 },
+  splashProgressTrack: { marginTop: 30, width: 220, height: 6, borderRadius: 999, overflow: "hidden", backgroundColor: "rgba(255,255,255,0.1)" },
+  splashProgressFill: { width: "100%", height: "100%", borderRadius: 999, backgroundColor: "#f59e0b" },
   safe: { flex: 1, backgroundColor: "#081120" },
   wrap: { paddingHorizontal: 16, paddingTop: 12, gap: 18, paddingBottom: 34, backgroundColor: "#081120" },
   trackingShell: { flex: 1, backgroundColor: "#ffffff" },
@@ -3817,17 +3966,20 @@ const styles = StyleSheet.create({
   subscriptionPlansStack: { gap: 12, width: "100%" },
   subscriptionPlanCard: { backgroundColor: "#0d1728", borderRadius: 20, borderWidth: 1, borderColor: "rgba(71,85,105,0.76)", padding: 14, gap: 10 },
   subscriptionPlanCardActive: { borderColor: "#f59e0b", backgroundColor: "#111c2d" },
-  subscriptionTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
+  subscriptionPlanHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 14, width: "100%" },
+  subscriptionPlanIdentity: { flex: 1, minWidth: 0, alignItems: "flex-start", gap: 7 },
   subscriptionPlanTitle: { color: "#f8fafc", fontSize: 20, fontWeight: "800" },
-  subscriptionPlanBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(34,197,94,0.28)", backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 9, paddingVertical: 5 },
+  subscriptionPlanBadge: { alignSelf: "flex-start", minHeight: 29, justifyContent: "center", borderRadius: 999, borderWidth: 1, borderColor: "rgba(34,197,94,0.28)", backgroundColor: "rgba(34,197,94,0.12)", paddingHorizontal: 10, paddingVertical: 5 },
   subscriptionPlanBadgeText: { color: "#86efac", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.5 },
-  subscriptionPlanTagline: { color: "#fbbf24", fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8 },
-  subscriptionPlanPriceWrap: { alignItems: "flex-end", gap: 2 },
+  subscriptionPlanTagline: { color: "#fbbf24", fontSize: 12, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.8, lineHeight: 17 },
+  subscriptionPlanPriceWrap: { minWidth: 108, alignItems: "flex-end", gap: 2, paddingTop: 2 },
   subscriptionPlanPrice: { color: "#f8fafc", fontSize: 18, fontWeight: "900" },
   subscriptionPlanPriceMeta: { color: "#8fa4ba", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.7 },
   subscriptionFeatureList: { gap: 8, width: "100%" },
   subscriptionFeatureItem: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
   subscriptionFeatureBullet: { color: "#f59e0b", fontSize: 14, fontWeight: "900", lineHeight: 20 },
+  subscriptionPaymentPanel: { width: "100%", marginTop: 10, paddingTop: 16, borderTopWidth: 1, borderTopColor: "rgba(71,85,105,0.5)", gap: 10 },
+  subscriptionPaymentLabel: { marginTop: 8 },
   subscriptionCardHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 12, width: "100%" },
   subscriptionPriceBadge: { borderRadius: 999, borderWidth: 1, borderColor: "rgba(245,158,11,0.28)", backgroundColor: "rgba(245,158,11,0.12)", paddingHorizontal: 12, paddingVertical: 7 },
   subscriptionPriceBadgeText: { color: "#fbbf24", fontSize: 12, fontWeight: "800" },

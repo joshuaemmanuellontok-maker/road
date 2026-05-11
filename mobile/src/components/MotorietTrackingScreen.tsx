@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
   Alert,
+  AppState,
   Linking,
   Pressable,
   ScrollView,
@@ -19,6 +20,7 @@ import {
   getRoute,
   payServiceWithCredits,
   submitDispatchFeedback,
+  syncServiceOnlinePayment,
   type DispatchDetails,
   type DispatchFeedback,
 } from "../lib/roadresqApi";
@@ -48,6 +50,7 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [paymentSubmitting, setPaymentSubmitting] = useState<"soteria_credits" | "online_payment" | null>(null);
+  const [paymentSyncing, setPaymentSyncing] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [existingFeedback, setExistingFeedback] = useState<DispatchFeedback | null>(null);
   const [feedbackThread, setFeedbackThread] = useState<DispatchFeedback[]>([]);
@@ -149,6 +152,64 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
       setReviewOpen(true);
     }
   }, [dispatch?.dispatchStatus]);
+
+  useEffect(() => {
+    const payment = dispatch?.payment;
+    const shouldSync =
+      dispatch?.dispatchStatus === "payment_pending" &&
+      payment?.paymentMethod === "online_payment" &&
+      payment.paymentStatus === "provider_pending";
+
+    if (!shouldSync) {
+      return;
+    }
+
+    let active = true;
+    let syncing = false;
+
+    const syncPayment = async () => {
+      if (syncing) {
+        return;
+      }
+
+      try {
+        syncing = true;
+        const result = await syncServiceOnlinePayment(dispatchId);
+        const syncedDispatch = result.dispatch ?? null;
+        if (!active) return;
+
+        if (syncedDispatch) {
+          setDispatch(syncedDispatch);
+          return;
+        }
+
+        const details = await fetchDispatchDetails(dispatchId);
+        if (active) {
+          setDispatch(details);
+        }
+      } catch (syncError) {
+        console.warn("PayMongo payment sync failed:", syncError);
+      } finally {
+        syncing = false;
+      }
+    };
+
+    void syncPayment();
+    const interval = setInterval(() => {
+      void syncPayment();
+    }, 10000);
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") {
+        void syncPayment();
+      }
+    });
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+      appStateSubscription.remove();
+    };
+  }, [dispatch?.dispatchStatus, dispatch?.payment?.paymentMethod, dispatch?.payment?.paymentStatus, dispatchId]);
 
   useEffect(() => {
     if (dispatch?.dispatchStatus !== "completed" || !motoristUserId) {
@@ -295,6 +356,22 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
       setPaymentSubmitting(null);
     }
   };
+
+  const handlePaymentSync = async () => {
+    try {
+      setPaymentSyncing(true);
+      const result = await syncServiceOnlinePayment(dispatchId);
+      if (result.dispatch) {
+        setDispatch(result.dispatch);
+      } else {
+        await refreshDispatch();
+      }
+    } catch (err) {
+      Alert.alert("Payment check failed", err instanceof Error ? err.message : "Could not check the PayMongo payment yet.");
+    } finally {
+      setPaymentSyncing(false);
+    }
+  };
   const mapMarkers: LeafletMarker[] = [
     {
       id: "motorist",
@@ -354,9 +431,13 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
               <View style={styles.paymentLayout}>
                 <View style={styles.paymentSummary}>
                   <Text style={styles.summaryHeading}>Payment breakdown</Text>
+                  <Text style={styles.summaryLine}>Service fee: {formatPeso(payment.baseServiceAmount ?? payment.totalAmount)}</Text>
+                  {payment.payoutTransferFee ? (
+                    <Text style={styles.summaryLine}>InstaPay transfer fee: {formatPeso(payment.payoutTransferFee)}</Text>
+                  ) : null}
                   <Text style={styles.summaryLine}>Total payment: {formatPeso(payment.totalAmount)}</Text>
-                  <Text style={styles.summaryLine}>Soteria commission: {formatPeso(payment.commissionAmount)}</Text>
-                  <Text style={styles.summaryLine}>Responder net payout: {formatPeso(payment.serviceAmount)}</Text>
+                  <Text style={styles.summaryLine}>Soteria commission added: {formatPeso(payment.commissionAmount)}</Text>
+                  <Text style={styles.summaryLine}>Responder service payout: {formatPeso(payment.serviceAmount)}</Text>
                   <Text style={styles.summaryLine}>
                     Commission rate: {Math.round(payment.commissionRate * 100)}%
                     {payment.subscriptionStatus === "active" ? " for subscribed motorists" : " for non-subscribed motorists"}
@@ -494,9 +575,13 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
           <Text style={styles.reviewTitle}>Service Payment</Text>
           <Text style={styles.reviewHint}>The responder marked the service done. Please choose your payment method.</Text>
           <View style={styles.paymentSummary}>
+            <Text style={styles.summaryLine}>Service fee: {formatPeso(paymentDue.baseServiceAmount ?? paymentDue.totalAmount)}</Text>
+            {paymentDue.payoutTransferFee ? (
+              <Text style={styles.summaryLine}>InstaPay transfer fee: {formatPeso(paymentDue.payoutTransferFee)}</Text>
+            ) : null}
             <Text style={styles.summaryLine}>Total due: {formatPeso(paymentDue.totalAmount)}</Text>
-            <Text style={styles.summaryLine}>Soteria commission: {formatPeso(paymentDue.commissionAmount)}</Text>
-            <Text style={styles.summaryLine}>Responder net payout: {formatPeso(paymentDue.serviceAmount)}</Text>
+            <Text style={styles.summaryLine}>Soteria commission added: {formatPeso(paymentDue.commissionAmount)}</Text>
+            <Text style={styles.summaryLine}>Responder service payout: {formatPeso(paymentDue.serviceAmount)}</Text>
           </View>
           <View style={styles.paymentActions}>
             <Pressable
@@ -518,6 +603,17 @@ export const MotorietTrackingScreen: React.FC<Props> = ({
               </Text>
             </Pressable>
           </View>
+          {paymentDue.paymentMethod === "online_payment" ? (
+            <Pressable
+              style={[styles.syncPaymentButton, paymentSyncing && styles.payButtonDisabled]}
+              disabled={paymentSyncing}
+              onPress={handlePaymentSync}
+            >
+              <Text style={styles.syncPaymentButtonText}>
+                {paymentSyncing ? "Checking PayMongo..." : "Check PayMongo payment"}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
@@ -791,6 +887,20 @@ const styles = StyleSheet.create({
   },
   payButtonText: {
     color: "white",
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  syncPaymentButton: {
+    marginTop: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#bfdbfe",
+    backgroundColor: "#eff6ff",
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  syncPaymentButtonText: {
+    color: "#1d4ed8",
     fontSize: 13,
     fontWeight: "800",
   },
